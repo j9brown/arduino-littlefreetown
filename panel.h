@@ -60,6 +60,7 @@ public:
   };
 
   Panel();
+  ~Panel() = default;
 
   // Initialize the panel.
   void begin();

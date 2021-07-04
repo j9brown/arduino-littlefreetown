@@ -32,6 +32,7 @@ public:
 class Settings {
 public:
   Settings() {}
+  ~Settings() = default;
 
   void begin(uint8_t schemaVersion) {
     Setting<uint32_t, 0> magic;

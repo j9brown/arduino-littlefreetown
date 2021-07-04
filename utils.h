@@ -1,11 +1,16 @@
 #pragma once
 
+#include <Print.h>
+#include <TimeLib.h>
+
 inline void assert(bool condition) {
   if (condition) return;
 
   while (true); // wait for watchdog reset
   __builtin_unreachable();
 }
+
+void printDateAndTime(Print& printer, time_t time);
 
 struct RGB {
   uint8_t r, g, b;
@@ -15,11 +20,4 @@ struct RGB {
   }
 };
 
-inline RGB colorWheel(uint8_t pos) {
-  pos = 255 - pos;
-  if (pos < 85)
-    return RGB{uint8_t(255 - pos * 3), 0, uint8_t(pos * 3)};
-  if (pos < 170)
-    return RGB{0, uint8_t((pos - 85) * 3), uint8_t(255 - (pos - 85) * 3)};
-  return RGB{uint8_t((pos - 170) * 3), uint8_t(255 - (pos - 170) * 3), 0};
-}
+RGB colorWheel(uint8_t pos);

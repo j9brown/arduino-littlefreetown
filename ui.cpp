@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <utility>
+
 #include "ui.h"
 #include "utils.h"
 
@@ -5,7 +8,8 @@ namespace {
 const RGB DEFAULT_DISPLAY_COLOR = RGB{188,0,166};
 const RGB DEFAULT_KNOB_COLOR = RGB{40,40,40};
 
-const uint32_t ACTIVITY_TIMEOUT_MS = 30 * 1000;
+const millis_t ACTIVITY_TIMEOUT = 30 * 1000;
+const millis_t POLL_INTERVAL = 20;
 } // namespace
 
 InputEvent Binding::readInputEvent() {
@@ -39,8 +43,6 @@ InputEvent Binding::readInputEvent() {
 Stage::Stage(Binding* binding) :
     _binding(binding), _canvas(binding) {}
 
-Stage::~Stage() {}
-
 void Stage::begin(std::unique_ptr<Scene> scene) {
   assert(_stateIndex == -1);
   _context._requestedPush = std::move(scene);
@@ -55,6 +57,7 @@ void Stage::update() {
     _context._requestedPop = false;
     _context._requestedPush = nullptr; // don't honor push from exited scene
     _context.requestDraw();
+    _needPoll = true;
     return;
   } else {
     _context._requestedPop = false;
@@ -67,6 +70,7 @@ void Stage::update() {
     _context._requestedPush = nullptr;
     _context.requestDraw();
     topScene().enter(_context);
+    _needPoll = true;
     return;
   }
 
@@ -102,8 +106,8 @@ void Stage::update() {
       _asleep = true;
       _binding->gfx().setPowerSave(true);
       _binding->setColors(RGB{}, RGB{});
+      return;
     }
-    return;
   }
 
   // Handle waking
@@ -115,14 +119,26 @@ void Stage::update() {
       _binding->gfx().setPowerSave(false);
       _context.requestDraw();
       activity();
+      return;
     }
+  }
+  
+  // Handle polling for changes (may wake)
+  _context._frameTime = millis();
+  if (_needPoll || _context._frameTime - _lastPollTime >= POLL_INTERVAL) {
+    _needPoll = false;
+    _lastPollTime = _context._frameTime;
+    topScene().poll(_context);
     return;
-  } else if (_asleep) {
+  }
+
+  // Stop here if asleep.
+  if (_asleep) {
     return;
   }
 
   // Handle activity timeouts
-  if (millis() - _lastActivityTime >= ACTIVITY_TIMEOUT_MS) {
+  if (_context._frameTime - _lastActivityTime >= ACTIVITY_TIMEOUT) {
     _context.requestSleep();
     return;
   }
@@ -141,6 +157,9 @@ void Stage::beginDraw() {
   _canvas.gfx().setFont(u8g2_font_miranda_nbp_tr);
   _canvas.gfx().clearBuffer();
   _canvas.gfx().home();
+  _canvas.gfx().setFontPosTop();
+  _canvas.gfx().setFontMode(1);
+  _canvas.gfx().setDrawColor(2);
   _canvas.setDisplayColor(DEFAULT_DISPLAY_COLOR);
   _canvas.setKnobColor(DEFAULT_KNOB_COLOR);
 }
@@ -164,11 +183,93 @@ void Stage::popState() {
   --_stateIndex;
 }
 
-void Menu::draw(Context& context, Canvas& canvas) {
-  canvas.gfx().setCursor(0, 20);
-  canvas.gfx().print("Menu!");
+void Menu::poll(Context& context) {
+  for (const auto& item : _items) {
+    item->poll(context);
+  }
 }
 
 bool Menu::input(Context& context, const InputEvent& event) {
+  if (_items.empty()) return false;
+  
+  switch (event.type) {
+    case InputType::SINGLE_CLICK:
+      if (_editing) {
+        _editing = false;
+      } else {
+        _editing = _items[_activeIndex]->select(context);
+      }
+      context.requestDraw();
+      return true;
+    case InputType::ROTATE:
+      if (_editing) {
+        _items[_activeIndex]->edit(context, event.value);
+        context.requestDraw();
+      } else {
+        size_t newIndex = std::min(_items.size() - 1,
+            size_t(std::max(0L, int32_t(_activeIndex) + event.value)));
+        if (_activeIndex != newIndex) {
+          _activeIndex = newIndex;
+          context.requestDraw();
+        }
+      }
+      return true;
+    case InputType::BACK:
+      if (_editing) {
+        _editing = false;
+        context.requestDraw();
+        return true;
+      }
+      return false;
+    default:
+      return false;
+  }
+}
+
+void Menu::draw(Context& context, Canvas& canvas) {
+  // Scroll into view
+  const uint32_t displayHeight = canvas.gfx().getDisplayHeight();
+  const uint32_t displayWidth = canvas.gfx().getDisplayWidth();
+  const uint32_t lineHeight = canvas.gfx().getMaxCharHeight();
+  const uint32_t maxFullyVisibleLines = displayHeight / lineHeight;
+  if (_activeIndex < _scrollTop) {
+    _scrollTop = _activeIndex;
+  } else {
+    size_t scrollBottom = _scrollTop + maxFullyVisibleLines - 1;
+    if (_activeIndex > scrollBottom) {
+      _scrollTop = _activeIndex + 1 - maxFullyVisibleLines;
+    }
+  }
+
+  // Draw items
+  size_t index = _scrollTop;
+  uint32_t y = 0;
+  while (index < _items.size() && y < displayHeight) {
+    if (index == _activeIndex) {
+      if (_editing) {
+        canvas.gfx().drawBox(90, y, displayWidth - 90, lineHeight);
+      } else {
+        canvas.gfx().drawBox(0, y, displayWidth, lineHeight);
+      }
+    }
+    _items[index]->drawLabel(context, canvas, 1, y);
+    _items[index]->drawValue(context, canvas, 93, y);
+    index++;
+    y += lineHeight;
+  }
+}
+
+Item::Item(String label) : _label(std::move(label)) {}
+
+void Item::drawLabel(Context& context, Canvas& canvas, uint32_t x, uint32_t y) {
+  canvas.gfx().drawStr(x, y, _label.c_str());
+}
+
+NavigateItem::NavigateItem(String label, SelectCallback selectCallback) :
+    Item(std::move(label)),
+    _selectCallback(std::move(selectCallback)) {}
+
+bool NavigateItem::select(Context& context) {
+  context.requestPush(_selectCallback());
   return false;
 }

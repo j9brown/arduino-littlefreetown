@@ -27,7 +27,7 @@ Panel* Panel::_self;
 Panel::Panel() :
     _display(LCD_ROTATION, LCD_CS, LCD_A0, LCD_RST),
     _leds(3, LED_DIN, NEO_RGB | NEO_KHZ800),
-    _knobEncoder(BTN_EN1, BTN_EN2),
+    _knobEncoder(BTN_EN2, BTN_EN1),
     _knobRotations(0),
     _knobButton(BTN_ENC, INPUT_PULLUP),
     _killButton(SW_KILL, INPUT) {
@@ -76,10 +76,10 @@ int32_t Panel::readKnobRotations() {
 void Panel::handleKnobRotation() {
   switch (_self->_knobEncoder.read()) {
     case DIR_CW:
-      _self->_knobRotations--;
+      _self->_knobRotations++;
       break;
     case DIR_CCW:
-      _self->_knobRotations++;
+      _self->_knobRotations--;
       break;
   }
 }
