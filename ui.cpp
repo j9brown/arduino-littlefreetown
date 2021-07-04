@@ -2,9 +2,11 @@
 #include "utils.h"
 
 namespace {
-const RGB defaultDisplayColor = RGB{188,0,166};
-const RGB defaultKnobColor = RGB{40,40,40};
-}
+const RGB DEFAULT_DISPLAY_COLOR = RGB{188,0,166};
+const RGB DEFAULT_KNOB_COLOR = RGB{40,40,40};
+
+const uint32_t ACTIVITY_TIMEOUT_MS = 30 * 1000;
+} // namespace
 
 InputEvent Binding::readInputEvent() {
   int32_t rotations = _panel->readKnobRotations();
@@ -42,6 +44,7 @@ Stage::~Stage() {}
 void Stage::begin(std::unique_ptr<Scene> scene) {
   assert(_stateIndex == -1);
   _context._requestedPush = std::move(scene);
+  activity();
 }
 
 void Stage::update() {
@@ -70,6 +73,12 @@ void Stage::update() {
   // Handle one input event
   InputEvent event = _binding->readInputEvent();
   if (event.type != InputType::NONE) {
+    if (_asleep) { // eat input events used to wake
+      _context.requestWake();
+      return;
+    }
+
+    activity();
     if (!topScene().input(_context, event)) {
       switch (event.type) {
         case InputType::BACK:
@@ -85,12 +94,46 @@ void Stage::update() {
     return;
   }
 
+  // Handle sleeping
+  if (_context._requestedSleep) {
+    _context._requestedSleep = false;
+    if (!_asleep) {
+      Serial.println("Going to sleep");
+      _asleep = true;
+      _binding->gfx().setPowerSave(true);
+      _binding->setColors(RGB{}, RGB{});
+    }
+    return;
+  }
+
+  // Handle waking
+  if (_context._requestedWake) {
+    _context._requestedWake = false;
+    if (_asleep) {
+      Serial.println("Waking up");
+      _asleep = false;
+      _binding->gfx().setPowerSave(false);
+      _context.requestDraw();
+      activity();
+    }
+    return;
+  } else if (_asleep) {
+    return;
+  }
+
+  // Handle activity timeouts
+  if (millis() - _lastActivityTime >= ACTIVITY_TIMEOUT_MS) {
+    _context.requestSleep();
+    return;
+  }
+
   // Handle drawing
   if (_context._requestedDraw) {
     _context._requestedDraw = false;
     beginDraw();
     topScene().draw(_context, _canvas);
     endDraw();
+    return;
   }
 }
 
@@ -98,13 +141,17 @@ void Stage::beginDraw() {
   _canvas.gfx().setFont(u8g2_font_miranda_nbp_tr);
   _canvas.gfx().clearBuffer();
   _canvas.gfx().home();
-  _canvas.setDisplayColor(defaultDisplayColor);
-  _canvas.setKnobColor(defaultKnobColor);
+  _canvas.setDisplayColor(DEFAULT_DISPLAY_COLOR);
+  _canvas.setKnobColor(DEFAULT_KNOB_COLOR);
 }
 
 void Stage::endDraw() {
   _canvas.gfx().sendBuffer();
   _canvas.applyColors();
+}
+
+void Stage::activity() {
+  _lastActivityTime = millis();
 }
 
 void Stage::pushState(std::unique_ptr<Scene> scene) {
@@ -123,44 +170,5 @@ void Menu::draw(Context& context, Canvas& canvas) {
 }
 
 bool Menu::input(Context& context, const InputEvent& event) {
-  return false;
-}
-
-void SelfTest::draw(Context& context, Canvas& canvas) {
-  canvas.gfx().drawStr(0, 10, "Hello world!");
-  canvas.gfx().drawStr(0, 30, _message.c_str());
-
-  canvas.setDisplayColor(colorWheel(_values[0])* 0.8f);
-  canvas.setKnobColor(colorWheel(_values[1]) * 0.4f);
-}
-
-bool SelfTest::input(Context& context, const InputEvent& event) {
-  switch (event.type) {
-    case InputType::LONG_PRESS:
-      _message = "LONG_PRESS";
-      break;
-    case InputType::SINGLE_CLICK:
-      _message = "SINGLE_CLICK";
-      _index = _index ? 0 : 1;
-      break;
-    case InputType::DOUBLE_CLICK:
-      _message = "DOUBLE_CLICK";
-      break;
-    case InputType::ROTATE:
-      _message = "ROTATE: " + String(event.value);
-      _values[_index] += uint8_t(event.value * 5);
-      break;
-    case InputType::BACK:
-      _message = "BACK";
-      break;
-    case InputType::HOME:
-      _message = "HOME";
-      break;
-    default:
-      break;
-  }
-
-  context.requestDraw();
-  Serial.println(_message);
   return false;
 }

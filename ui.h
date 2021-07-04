@@ -68,6 +68,8 @@ public:
   inline void requestPop() { _requestedPop = true; }
   inline void requestHome() { _requestedHome = true; }
   inline void requestDraw() { _requestedDraw = true; }
+  inline void requestSleep() { _requestedSleep = true; _requestedWake = false; }
+  inline void requestWake() { _requestedWake = true; _requestedSleep = false; }
 
 private:
   Context(const Context&) = delete;
@@ -81,6 +83,8 @@ private:
   bool _requestedPop = false;
   bool _requestedHome = false;
   bool _requestedDraw = false;
+  bool _requestedSleep = false;
+  bool _requestedWake = false;
 };
 
 // Drawing interface.
@@ -136,6 +140,7 @@ private:
   void popState();
   void beginDraw();
   void endDraw();
+  void activity();
 
   static constexpr ssize_t MAX_STATE_STACK_DEPTH = 10;
 
@@ -144,6 +149,8 @@ private:
   ssize_t _stateIndex = -1;
   Context _context;
   Canvas _canvas;
+  bool _asleep = false;
+  uint32_t _lastActivityTime = 0;
 };
 
 class Scene {
@@ -173,18 +180,4 @@ public:
 
 private:
   
-};
-
-class SelfTest : public Scene {
-public:
-  SelfTest() {}
-  virtual ~SelfTest() override {}
-
-  void draw(Context& context, Canvas& canvas) override;
-  bool input(Context& context, const InputEvent& event) override;
-
-private:
-  String _message = "---";
-  uint8_t _index = 0;
-  uint8_t _values[2] = { 200, 40 };
 };
