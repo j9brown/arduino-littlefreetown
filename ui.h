@@ -10,10 +10,18 @@
 #include <Arduino.h>
 
 #include "panel.h"
+#include "settings.h"
 
 class Scene;
 class Item;
 using millis_t = uint32_t;
+
+namespace {
+constexpr uint32_t LAYOUT_LABEL_LEFT = 0;
+constexpr uint32_t LAYOUT_LABEL_MARGIN = 1;
+constexpr uint32_t LAYOUT_VALUE_LEFT = 90;
+constexpr uint32_t LAYOUT_VALUE_MARGIN = 3;
+} // namespace
 
 enum class InputType {
   NONE = 0,
@@ -130,7 +138,9 @@ private:
 // External interface for managing the UI.
 class Stage {
 public:
-  Stage(Binding* binding);
+  using GetActivityTimeoutCallback = millis_t (*)();
+
+  Stage(Binding* binding, GetActivityTimeoutCallback getActivityTimeoutCallback);
   ~Stage() = default;
 
   void begin(std::unique_ptr<Scene> scene);
@@ -153,10 +163,12 @@ private:
   static constexpr ssize_t MAX_STATE_STACK_DEPTH = 10;
 
   Binding* const _binding;
+  Canvas _canvas;
+  Context _context;
+  GetActivityTimeoutCallback const _getActivityTimeoutCallback;
+
   State _stateStack[MAX_STATE_STACK_DEPTH];
   ssize_t _stateIndex = -1;
-  Context _context;
-  Canvas _canvas;
   bool _asleep = false;
   millis_t _lastActivityTime = 0;
   millis_t _lastPollTime = 0;
@@ -216,14 +228,30 @@ public:
   Item(String label);
   virtual ~Item() = default;
 
+  // Called periodically to check for changes and make requests on the context.
   virtual void poll(Context& context) {}
-  virtual void drawLabel(Context& context, Canvas& canvas, uint32_t x, uint32_t y);
-  virtual void drawValue(Context& context, Canvas& canvas, uint32_t x, uint32_t y) {}
-  virtual bool select(Context& context) { return false; }
+
+  // Called to draw the item's value at the given position.
+  virtual void draw(Context& context, Canvas& canvas, bool active, bool editing,
+      uint32_t y, uint32_t width, uint32_t height);
+
+  // Called when the item is clicked while active.
+  // Returns true if the item should be edited.
+  virtual bool click(Context& context) { return false; }
+
+  // Called to apply a delta to the item's value.
   virtual void edit(Context& context, int32_t delta) {}
 
 private:
   String const _label;
+};
+
+class BackItem : public Item {
+public:
+  BackItem(String label);
+  ~BackItem() override = default;
+
+  bool click(Context& context) override;
 };
 
 class NavigateItem : public Item {
@@ -233,26 +261,89 @@ public:
   NavigateItem(String label, SelectCallback selectCallback);
   ~NavigateItem() override = default;
 
-  bool select(Context& context) override;
+  bool click(Context& context) override;
 
 private:
   SelectCallback _selectCallback;
 };
 
 template <typename T>
-class NumberItem : public Item {
+class ValueItem : public Item {
+public:
+  ValueItem(String label);
+  ~ValueItem() override = default;
+
+  void poll(Context& context) override;
+  void draw(Context& context, Canvas& canvas, bool active, bool editing,
+      uint32_t y, uint32_t width, uint32_t height) override;
+  bool click(Context& context) override;
+  void edit(Context& context, int32_t delta) override;
+
+protected:
+  virtual T getValue() = 0;
+  virtual void setValue(T value) = 0;
+  virtual T addDeltaWithRollover(T value, int32_t delta) = 0;
+  virtual void printValue(Print& printer, T value) = 0;
+
+private:
+  T _polledValue{};
+};
+
+template <typename T>
+ValueItem<T>::ValueItem(String label) :
+    Item(std::move(label)) {}
+
+template <typename T>
+void ValueItem<T>::poll(Context& context) {
+  T value = getValue();
+  if (value != _polledValue) {
+    std::swap(value, _polledValue);
+    context.requestDraw();
+  }
+}
+
+template <typename T>
+void ValueItem<T>::draw(Context& context, Canvas& canvas, bool active, bool editing,
+    uint32_t y, uint32_t width, uint32_t height) {
+  Item::draw(context, canvas, active, editing, y, width, height);     
+  canvas.gfx().setCursor(LAYOUT_VALUE_LEFT + LAYOUT_VALUE_MARGIN, y);
+  printValue(canvas.gfx(), getValue());
+}
+
+template <typename T>
+bool ValueItem<T>::click(Context& context) {
+  return true;
+}
+
+template <typename T>
+void ValueItem<T>::edit(Context& context, int32_t delta) {
+  T oldValue = getValue();
+  T newValue = addDeltaWithRollover(oldValue, delta);
+  if (newValue != oldValue) {
+    setValue(newValue);
+    poll(context);
+  }
+}
+
+template <typename T>
+class NumericItem : public ValueItem<T> {
 public:
   using GetCallback = T (*)();
   using SetCallback = void (*)(T);
 
-  NumberItem(String label, GetCallback getCallback, SetCallback setCallback,
+  NumericItem(String label, GetCallback getCallback, SetCallback setCallback,
       T min, T max, T step);
-  ~NumberItem() override = default;
 
-  void poll(Context& context) override;
-  void drawValue(Context& context, Canvas& canvas, uint32_t x, uint32_t y) override;
-  bool select(Context& context) override;
-  void edit(Context& context, int32_t delta) override;
+  template <unsigned addr>
+  NumericItem(String label, Setting<T, addr>, T min, T max, T step);
+      
+  ~NumericItem() override = default;
+
+protected:
+  T getValue() override;
+  void setValue(T value) override;
+  T addDeltaWithRollover(T value, int32_t delta) override;
+  void printValue(Print& printer, T value) override;
 
 private:
   const GetCallback _getCallback;
@@ -262,56 +353,77 @@ private:
 };
 
 template <typename T>
-NumberItem<T>::NumberItem(String label, GetCallback getCallback, SetCallback setCallback,
+NumericItem<T>::NumericItem(String label, GetCallback getCallback, SetCallback setCallback,
     T min, T max, T step) :
-    Item(std::move(label)),
+    ValueItem<T>(std::move(label)),
     _getCallback(std::move(getCallback)),
     _setCallback(std::move(setCallback)),
     _min(std::move(min)),
     _max(std::move(max)),
-    _step(std::move(step)),
-    _polledValue(_getCallback()) {}
+    _step(std::move(step)) {}
 
 template <typename T>
-void NumberItem<T>::poll(Context& context) {
-  T value = _getCallback();
-  if (value != _polledValue) {
-    std::swap(value, _polledValue);
-    context.requestDraw();
-  }
+template <unsigned addr>
+NumericItem<T>::NumericItem(String label, Setting<T, addr>, T min, T max, T step) :
+    NumericItem(std::move(label), Setting<T, addr>::get, Setting<T, addr>::set,
+        std::move(min), std::move(max), std::move(step)) {}
+
+template <typename T>
+T NumericItem<T>::getValue() {
+  return _getCallback();
 }
 
 template <typename T>
-void NumberItem<T>::drawValue(Context& context, Canvas& canvas, uint32_t x, uint32_t y) {
-  canvas.gfx().setCursor(x, y);
-  canvas.gfx().print(_polledValue);
+void NumericItem<T>::setValue(T value) {
+  _setCallback(value);
 }
 
 template <typename T>
-bool NumberItem<T>::select(Context& context) {
-  return true;  
+T NumericItem<T>::addDeltaWithRollover(T value, int32_t delta) {
+  return ::addDeltaWithRollover<T>(value, _min, _max, _step, delta);
 }
 
 template <typename T>
-void NumberItem<T>::edit(Context& context, int32_t delta) {
-  T newValue;
-  if (delta > 0) {
-    T adj = _step * uint32_t(delta);
-    if (_polledValue < _max - adj) {
-      newValue = _polledValue + adj;
-    } else {
-      newValue = _max;
-    }
-  } else {
-    T adj = _step * uint32_t(-delta);
-    if (_polledValue > _min + adj) {
-      newValue = _polledValue - adj;
-    } else {
-      newValue = _min;
-    }
-  }
-  if (newValue != _polledValue) {
-    _setCallback(newValue);
-    poll(context);
-  }
+void NumericItem<T>::printValue(Print& printer, T value) {
+  printer.print(value);
 }
+
+class TintItem : public NumericItem<tint_t> {
+public:
+  TintItem(String label, GetCallback getCallback, SetCallback setCallback);
+
+  template <unsigned addr>
+  TintItem(String label, Setting<tint_t, addr>);
+  
+  ~TintItem() override = default;
+
+  void draw(Context& context, Canvas& canvas, bool active, bool editing,
+      uint32_t y, uint32_t width, uint32_t height) override;
+
+protected:
+  void printValue(Print& printer, tint_t value) override;
+};
+
+template <unsigned addr>
+TintItem::TintItem(String label, Setting<tint_t, addr>) :
+    TintItem(label, Setting<tint_t, addr>::get, Setting<tint_t, addr>::set) {}
+
+class BrightnessItem : public NumericItem<brightness_t> {
+public:
+  BrightnessItem(String label, GetCallback getCallback, SetCallback setCallback);
+
+  template <unsigned addr>
+  BrightnessItem(String label, Setting<brightness_t, addr>);
+
+  ~BrightnessItem() override = default;
+
+  void draw(Context& context, Canvas& canvas, bool active, bool editing,
+      uint32_t y, uint32_t width, uint32_t height) override;
+
+protected:
+  void printValue(Print& printer, brightness_t value) override;
+};
+
+template <unsigned addr>
+BrightnessItem::BrightnessItem(String label, Setting<brightness_t, addr>) :
+    BrightnessItem(label, Setting<brightness_t, addr>::get, Setting<brightness_t, addr>::set) {}

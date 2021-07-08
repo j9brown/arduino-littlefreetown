@@ -1,5 +1,12 @@
+/*
+ * Wiring:
+ * - see panel.3
+ * - pin 3: LEDs
+ */
+
 #include <memory>
 
+#include <Adafruit_NeoPixel.h>
 #include <Adafruit_SleepyDog.h>
 #include <Print.h>
 #include <TimeLib.h>
@@ -10,19 +17,199 @@
 #include "utils.h"
 
 namespace {
+const uint32_t SETTINGS_SCHEMA_VERSION = 2;
+Setting<uint8_t, 0> activityTimeoutSeconds;
+Setting<uint8_t, 1> dawnHour;
+Setting<uint8_t, 2> duskHour;
+Setting<uint8_t, 3> nightHour;
+Setting<brightness_t, 4> daytimeBrightness;
+Setting<brightness_t, 5> eveningBrightness;
+Setting<brightness_t, 6> nighttimeBrightness;
+Setting<tint_t, 100> museumLightTint;
+Setting<brightness_t, 101> museumLightBrightness;
+Setting<tint_t, 200> libraryLightTint;
+Setting<brightness_t, 201> libraryLightBrightness;
+Setting<uint8_t, 2000> testSetting1;
+Setting<int8_t, 2001> testSetting2;
+
+void resetSettings() {
+  activityTimeoutSeconds.set(30);
+  dawnHour.set(7);
+  duskHour.set(18);
+  nightHour.set(23);
+  daytimeBrightness.set(BRIGHTNESS_MAX);
+  eveningBrightness.set(BRIGHTNESS_MAX);
+  nighttimeBrightness.set(BRIGHTNESS_MAX);
+  museumLightTint.set(TINT_WHITE);
+  museumLightBrightness.set(BRIGHTNESS_MAX);
+  libraryLightTint.set(TINT_WHITE);
+  libraryLightBrightness.set(BRIGHTNESS_MAX);
+  testSetting1.set(0);
+  testSetting2.set(0);
+}
+
 Settings settings;
+
 Panel panel;
 Binding binding(&panel);
-Stage stage(&binding);
+Stage stage(&binding,
+  [] { return activityTimeoutSeconds.get() * 1000UL; });
 
-const uint32_t SETTINGS_SCHEMA_VERSION = 1;
-Setting<bool, 0> alwaysOn;
+constexpr int LIGHTS_PIN = 3;
+constexpr unsigned LIGHTS_MUSEUM_FIRST = 0;
+constexpr unsigned LIGHTS_MUSEUM_COUNT = 11;
+constexpr unsigned LIGHTS_LIBRARY_FIRST = 11;
+constexpr unsigned LIGHTS_LIBRARY_COUNT = 11;
+constexpr unsigned LIGHTS_TOTAL_COUNT = 22;
+Adafruit_NeoPixel lights(LIGHTS_TOTAL_COUNT, LIGHTS_PIN, NEO_GRBW | NEO_KHZ800);
+RGBW oldLights[LIGHTS_TOTAL_COUNT];
+RGBW newLights[LIGHTS_TOTAL_COUNT];
+
+enum class TimeOfDay {
+  NIGHTTIME,
+  DAYTIME,
+  EVENING
+};
+
+TimeOfDay timeOfDay() {
+  uint8_t h = hour();
+  if (h < dawnHour.get()) {
+    if (nightHour.get() < dawnHour.get() && h < nightHour.get()) {
+      return TimeOfDay::EVENING;
+    }
+    return TimeOfDay::NIGHTTIME;
+  }
+  if (h < duskHour.get()) {
+    return TimeOfDay::DAYTIME;
+  }
+  if (h < nightHour.get()) {
+    return TimeOfDay::EVENING;
+  }
+  return TimeOfDay::NIGHTTIME;
+}
+
+brightness_t brightnessForTimeOfDay() {
+  switch (timeOfDay()) {
+    case TimeOfDay::DAYTIME:
+      return daytimeBrightness.get();
+    case TimeOfDay::EVENING:
+      return eveningBrightness.get();
+    case TimeOfDay::NIGHTTIME:
+      return nighttimeBrightness.get();
+  }
+  return 1.0f;
+}
 } // namespace
 
-class SelfTest : public Scene {
+template <typename Fn>
+void editTime(Fn fn) {
+  time_t time = now();
+  TimeElements te;
+  breakTime(time, te);
+  fn(&te);
+  time = makeTime(te);
+  Teensy3Clock.set(time);
+  setTime(time);
+}
+
+void clampDayOfMonth(TimeElements* te, bool rollover) {
+  while (day(makeTime(*te)) != te->Day) {
+    te->Day = rollover ? 1 : te->Day - 1;
+  }
+}
+
+std::unique_ptr<Menu> makeMuseumMenu() {
+  auto menu = std::make_unique<Menu>();
+  menu->addItem(std::make_unique<Item>("* MUSEUM *"));
+  menu->addItem(std::make_unique<TintItem>("Light Tint", museumLightTint));
+  menu->addItem(std::make_unique<BrightnessItem>("Light Brightness", museumLightBrightness));
+  return menu;
+}
+
+std::unique_ptr<Menu> makeLibraryMenu() {
+  auto menu = std::make_unique<Menu>();
+  menu->addItem(std::make_unique<Item>("* LIBRARY *"));
+  menu->addItem(std::make_unique<TintItem>("Light Tint", libraryLightTint));
+  menu->addItem(std::make_unique<BrightnessItem>("Light Brightness", libraryLightBrightness));
+  return menu;
+}
+
+std::unique_ptr<Menu> makeTimeMenu() {
+  auto menu = std::make_unique<Menu>();
+  menu->addItem(std::make_unique<Item>("* TIME *"));
+  menu->addItem(std::make_unique<NumericItem<int>>("Year",
+    [] { return year(); },
+    [] (int x) {
+      editTime([x] (TimeElements* te) {
+        te->Year = CalendarYrToTm(x);
+        clampDayOfMonth(te, false);
+      });
+    },
+    2021, 2037, 1));
+  menu->addItem(std::make_unique<NumericItem<int>>("Month",
+    [] { return month(); },
+    [] (int x) {
+      editTime([x] (TimeElements* te) {
+        te->Month = x;
+        clampDayOfMonth(te, false);
+      });
+    },
+    1, 12, 1));
+  menu->addItem(std::make_unique<NumericItem<int>>("Day",
+    [] { return day(); },
+    [] (int x) {
+      editTime([x] (TimeElements* te) {
+        bool rollover = x > te->Day;
+        te->Day = x;
+        clampDayOfMonth(te, rollover);
+      });
+    },
+    1, 31, 1));
+  menu->addItem(std::make_unique<NumericItem<int>>("Hour",
+    [] { return hour(); },
+    [] (int x) {
+      editTime([x] (TimeElements* te) { te->Hour = x; });
+    },
+    0, 23, 1));
+  menu->addItem(std::make_unique<NumericItem<int>>("Minute",
+    [] { return minute(); },
+    [] (int x) {
+      editTime([x] (TimeElements* te) { te->Minute = x; });
+    },
+    0, 59, 1));
+  menu->addItem(std::make_unique<NumericItem<int>>("Second",
+    [] { return second(); },
+    [] (int x) {
+      editTime([x] (TimeElements* te) { te->Second = x; });
+    },
+    0, 59, 1));
+  return menu;
+}
+
+std::unique_ptr<Menu> makePowerSavingMenu() {
+  auto menu = std::make_unique<Menu>();
+  menu->addItem(std::make_unique<Item>("* POWER *"));
+  menu->addItem(std::make_unique<NumericItem<uint8_t>>("Dawn Hour",
+    dawnHour, 0, 23, 1));
+  menu->addItem(std::make_unique<NumericItem<uint8_t>>("Dusk Hour",
+    duskHour, 0, 23, 1));
+  menu->addItem(std::make_unique<NumericItem<uint8_t>>("Night Hour",
+    nightHour, 0, 23, 1));
+  menu->addItem(std::make_unique<BrightnessItem>("Daytime Brightness",
+    daytimeBrightness));
+  menu->addItem(std::make_unique<BrightnessItem>("Evening Brightness",
+    eveningBrightness));
+  menu->addItem(std::make_unique<BrightnessItem>("Nighttime Brightness",
+    nighttimeBrightness));
+  menu->addItem(std::make_unique<NumericItem<uint8_t>>("Display Timeout (s)",
+    activityTimeoutSeconds, 0, 240, 10));
+  return menu;
+}
+
+class BoardTest : public Scene {
 public:
-  SelfTest() {}
-  virtual ~SelfTest() override {}
+  BoardTest() {}
+  virtual ~BoardTest() override {}
 
   void poll(Context& context) override;
   void draw(Context& context, Canvas& canvas) override;
@@ -35,7 +222,7 @@ private:
   time_t _time;
 };
 
-void SelfTest::poll(Context& context) {
+void BoardTest::poll(Context& context) {
   time_t t = now();
   if (t != _time) {
     _time = t;
@@ -43,7 +230,7 @@ void SelfTest::poll(Context& context) {
   }
 }
 
-bool SelfTest::input(Context& context, const InputEvent& event) {
+bool BoardTest::input(Context& context, const InputEvent& event) {
   switch (event.type) {
     case InputType::LONG_PRESS:
       _message = "LONG_PRESS";
@@ -75,121 +262,105 @@ bool SelfTest::input(Context& context, const InputEvent& event) {
   return false;
 }
 
-void SelfTest::draw(Context& context, Canvas& canvas) {
-  canvas.gfx().drawStr(1, 0, "* SELF TEST *");
+void BoardTest::draw(Context& context, Canvas& canvas) {
+  canvas.gfx().drawStr(1, 0, "* BOARD TEST *");
+
   canvas.gfx().drawStr(1, 20, _message.c_str());
-  canvas.gfx().setCursor(1, 50);
+
+  canvas.gfx().setCursor(1, 40);
   canvas.gfx().print("Time: ");
   printDateAndTime(canvas.gfx(), _time);
+
+  canvas.gfx().setCursor(1, 50);
+  canvas.gfx().print("Time of Day: ");
+  switch (timeOfDay()) {
+    case TimeOfDay::DAYTIME:
+      canvas.gfx().print("Daytime");
+      break;
+    case TimeOfDay::EVENING:
+      canvas.gfx().print("Evening");
+      break;
+    case TimeOfDay::NIGHTTIME:
+      canvas.gfx().print("Nighttime");
+      break;
+  }
+
   canvas.setDisplayColor(colorWheel(_values[0])* 0.8f);
   canvas.setKnobColor(colorWheel(_values[1]) * 0.4f);
 }
 
-std::unique_ptr<SelfTest> makeSelfTest() {
-  return std::make_unique<SelfTest>();
+std::unique_ptr<BoardTest> makeBoardTestScene() {
+  return std::make_unique<BoardTest>();
 }
 
-template <typename Fn>
-void editTime(Fn fn) {
-  time_t time = now();
-  TimeElements te;
-  breakTime(time, te);
-  fn(&te);
-  time = makeTime(te);
-  Teensy3Clock.set(time);
-  setTime(time);
-}
-
-void clampDayOfMonth(TimeElements* te, bool rollover) {
-  while (month(makeTime(*te)) != te->Month) {
-    te->Day = rollover ? 1 : te->Day - 1;
-  }
-}
-
-std::unique_ptr<Menu> makeTimeMenu() {
+std::unique_ptr<Menu> makeEepromTestMenu() {
   auto menu = std::make_unique<Menu>();
-  menu->addItem(std::make_unique<Item>("* TIME *"));
-  menu->addItem(std::make_unique<NumberItem<int>>("Year",
-    [] { return year(); },
-    [] (int x) {
-      editTime([x] (TimeElements* te) {
-        te->Year = CalendarYrToTm(x < 2021 ? 2037 : x > 2037 ? 2021 : x);
-        clampDayOfMonth(te, false);
-      });
-    },
-    2020, 2038, 1));
-  menu->addItem(std::make_unique<NumberItem<int>>("Month",
-    [] { return month(); },
-    [] (int x) {
-      editTime([x] (TimeElements* te) {
-        te->Month = x < 1 ? 12 : x > 12 ? 1 : x;
-        clampDayOfMonth(te, false);
-      });
-    },
-    0, 13, 1));
-  menu->addItem(std::make_unique<NumberItem<int>>("Day",
-    [] { return day(); },
-    [] (int x) {
-      editTime([x] (TimeElements* te) {
-        te->Day = x < 1 ? 31 : x > 31 ? 1 : x;
-        clampDayOfMonth(te, x > 0);
-      });
-    },
-    0, 32, 1));
-  menu->addItem(std::make_unique<NumberItem<int>>("Hour",
-    [] { return hour(); },
-    [] (int x) {
-      editTime([x] (TimeElements* te) {
-        te->Hour = x < 0 ? 23 : x > 23 ? 0 : x;
-      });
-    },
-    -1, 24, 1));
-  menu->addItem(std::make_unique<NumberItem<int>>("Minute",
-    [] { return minute(); },
-    [] (int x) {
-      editTime([x] (TimeElements* te) {
-        te->Minute = x < 0 ? 59 : x > 59 ? 0 : x;
-      });
-    },
-    -1, 60, 1));
-  menu->addItem(std::make_unique<NumberItem<int>>("Second",
-    [] { return second(); },
-    [] (int x) {
-      editTime([x] (TimeElements* te) {
-        te->Second = x < 0 ? 59 : x > 59 ? 0 : x;
-      });
-    },
-    -1, 60, 1));
+  menu->addItem(std::make_unique<Item>("* EEPROM TEST *"));
+  menu->addItem(std::make_unique<NumericItem<uint8_t>>("Test Setting 1",
+    testSetting1, 0, 100, 5));
+  menu->addItem(std::make_unique<NumericItem<int8_t>>("Test Setting 2",
+    testSetting2, -10, 10, 1));
   return menu;
 }
 
-int32_t testSignedValue = 42;
-uint32_t testUnsignedValue = 33;
+std::unique_ptr<Menu> makeFactoryResetMenu() {
+  auto menu = std::make_unique<Menu>();
+  menu->addItem(std::make_unique<Item>("* FACTORY RESET *"));
+  menu->addItem(std::make_unique<BackItem>("Back Away Slowly..."));
+  menu->addItem(std::make_unique<NavigateItem>("Erase All Settings!", Settings::eraseAndReboot));
+  return menu;
+}
+
+std::unique_ptr<Menu> makeDiagnosticsMenu() {
+  auto menu = std::make_unique<Menu>();
+  menu->addItem(std::make_unique<Item>("* DIAGNOSTICS *"));
+  menu->addItem(std::make_unique<NavigateItem>("Board Test", makeBoardTestScene));
+  menu->addItem(std::make_unique<NavigateItem>("EEPROM Test", makeEepromTestMenu));
+  menu->addItem(std::make_unique<NavigateItem>("Factory Reset", makeFactoryResetMenu));
+  return menu;
+}
 
 std::unique_ptr<Menu> makeRootMenu() {
   auto menu = std::make_unique<Menu>();
   menu->addItem(std::make_unique<Item>("* LITTLE FREE TOWN *"));
-  menu->addItem(std::make_unique<NavigateItem>("Self Test", makeSelfTest));
+  menu->addItem(std::make_unique<NavigateItem>("Museum", makeMuseumMenu));
+  menu->addItem(std::make_unique<NavigateItem>("Library", makeLibraryMenu));
   menu->addItem(std::make_unique<NavigateItem>("Time", makeTimeMenu));
-  menu->addItem(std::make_unique<NumberItem<int32_t>>("Signed",
-    [] { return testSignedValue; },
-    [] (int32_t x) { testSignedValue = x; },
-    -100, 100, 3));
-  menu->addItem(std::make_unique<NumberItem<uint32_t>>("Unsigned",
-    [] { return testUnsignedValue; },
-    [] (int32_t x) { testUnsignedValue = x; },
-    0, 100, 2));
+  menu->addItem(std::make_unique<NavigateItem>("Power Saving", makePowerSavingMenu));
+  menu->addItem(std::make_unique<NavigateItem>("Diagnostics", makeDiagnosticsMenu));
   return menu;
 }
 
-void printWelcome() {
-  Serial.println("Little Free Town\n");
-  if (timeStatus() == timeSet) {
-    Serial.println("Time was synchronized with the host PC");
+void renderMuseumLights(float scale) {
+  RGBW color = makeStripColor(museumLightTint.get(), museumLightBrightness.get()) * scale;
+  for (size_t i = 0; i < LIGHTS_MUSEUM_COUNT; i++) {
+    newLights[i + LIGHTS_MUSEUM_FIRST] = color;
+  }  
+}
+
+void renderLibraryLights(float scale) {
+  RGBW color = makeStripColor(libraryLightTint.get(), libraryLightBrightness.get()) * scale;
+  for (size_t i = 0; i < LIGHTS_LIBRARY_COUNT; i++) {
+    newLights[i + LIGHTS_LIBRARY_FIRST] = color;
+  }  
+}
+
+void updateLights() {
+  const float scale = brightnessForTimeOfDay() * 0.1f;
+  renderMuseumLights(scale);
+  renderLibraryLights(scale);
+
+  bool changed = false;
+  for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
+    changed |= oldLights[i] != newLights[i];
   }
-  Serial.print("Time: ");
-  printDateAndTime(Serial, now());
-  Serial.println();
+  if (changed) {
+    for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
+      oldLights[i] = newLights[i];
+      lights.setPixelColor(i, newLights[i].r, newLights[i].g, newLights[i].b, newLights[i].w);
+    }
+    lights.show();
+  }  
 }
 
 void setup() {
@@ -205,12 +376,20 @@ void setup() {
   for (int i = 0; !Serial && i < 10; i++) {
     delay(100);
   }
-  printWelcome();
+
+  // Print welcome message.
+  Serial.println("Little Free Town\n");
+  Serial.print("Time: ");
+  printDateAndTime(Serial, now());
+  Serial.println();
+
+  // Initialize the settings.
+  settings.begin(SETTINGS_SCHEMA_VERSION, resetSettings);
 
   // Initialize the rest of the hardware.
-  settings.begin(SETTINGS_SCHEMA_VERSION);
   panel.begin();
   stage.begin(makeRootMenu());
+  lights.begin();
 }
 
 void loop() {
@@ -218,4 +397,5 @@ void loop() {
   
   panel.update();
   stage.update();
+  updateLights();
 }

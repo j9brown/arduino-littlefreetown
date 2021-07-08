@@ -5,11 +5,10 @@
 #include "utils.h"
 
 namespace {
-const RGB DEFAULT_DISPLAY_COLOR = RGB{188,0,166};
-const RGB DEFAULT_KNOB_COLOR = RGB{40,40,40};
+constexpr RGB DEFAULT_DISPLAY_COLOR = RGB{188,0,166};
+constexpr RGB DEFAULT_KNOB_COLOR = RGB{40,40,40};
 
-const millis_t ACTIVITY_TIMEOUT = 30 * 1000;
-const millis_t POLL_INTERVAL = 20;
+constexpr millis_t POLL_INTERVAL = 20;
 } // namespace
 
 InputEvent Binding::readInputEvent() {
@@ -40,8 +39,8 @@ InputEvent Binding::readInputEvent() {
   return InputEvent{ InputType::NONE };
 }
 
-Stage::Stage(Binding* binding) :
-    _binding(binding), _canvas(binding) {}
+Stage::Stage(Binding* binding, GetActivityTimeoutCallback getActivityTimeoutCallback) :
+    _binding(binding), _canvas(binding), _getActivityTimeoutCallback(std::move(getActivityTimeoutCallback)) {}
 
 void Stage::begin(std::unique_ptr<Scene> scene) {
   assert(_stateIndex == -1);
@@ -102,7 +101,7 @@ void Stage::update() {
   if (_context._requestedSleep) {
     _context._requestedSleep = false;
     if (!_asleep) {
-      Serial.println("Going to sleep");
+      //Serial.println("Going to sleep");
       _asleep = true;
       _binding->gfx().setPowerSave(true);
       _binding->setColors(RGB{}, RGB{});
@@ -114,7 +113,7 @@ void Stage::update() {
   if (_context._requestedWake) {
     _context._requestedWake = false;
     if (_asleep) {
-      Serial.println("Waking up");
+      //Serial.println("Waking up");
       _asleep = false;
       _binding->gfx().setPowerSave(false);
       _context.requestDraw();
@@ -138,7 +137,8 @@ void Stage::update() {
   }
 
   // Handle activity timeouts
-  if (_context._frameTime - _lastActivityTime >= ACTIVITY_TIMEOUT) {
+  millis_t timeout = _getActivityTimeoutCallback();
+  if (timeout > 0 && _context._frameTime - _lastActivityTime >= timeout) {
     _context.requestSleep();
     return;
   }
@@ -197,7 +197,7 @@ bool Menu::input(Context& context, const InputEvent& event) {
       if (_editing) {
         _editing = false;
       } else {
-        _editing = _items[_activeIndex]->select(context);
+        _editing = _items[_activeIndex]->click(context);
       }
       context.requestDraw();
       return true;
@@ -215,6 +215,7 @@ bool Menu::input(Context& context, const InputEvent& event) {
       }
       return true;
     case InputType::BACK:
+    case InputType::LONG_PRESS:
       if (_editing) {
         _editing = false;
         context.requestDraw();
@@ -245,15 +246,9 @@ void Menu::draw(Context& context, Canvas& canvas) {
   size_t index = _scrollTop;
   uint32_t y = 0;
   while (index < _items.size() && y < displayHeight) {
-    if (index == _activeIndex) {
-      if (_editing) {
-        canvas.gfx().drawBox(90, y, displayWidth - 90, lineHeight);
-      } else {
-        canvas.gfx().drawBox(0, y, displayWidth, lineHeight);
-      }
-    }
-    _items[index]->drawLabel(context, canvas, 1, y);
-    _items[index]->drawValue(context, canvas, 93, y);
+    const bool active = index == _activeIndex;
+    _items[index]->draw(context, canvas, active, active && _editing,
+        y, displayWidth, lineHeight);
     index++;
     y += lineHeight;
   }
@@ -261,15 +256,62 @@ void Menu::draw(Context& context, Canvas& canvas) {
 
 Item::Item(String label) : _label(std::move(label)) {}
 
-void Item::drawLabel(Context& context, Canvas& canvas, uint32_t x, uint32_t y) {
-  canvas.gfx().drawStr(x, y, _label.c_str());
+void Item::draw(Context& context, Canvas& canvas, bool active, bool editing,
+    uint32_t y, uint32_t width, uint32_t height) {
+  if (editing) {
+    canvas.gfx().drawBox(LAYOUT_VALUE_LEFT, y, width - LAYOUT_VALUE_LEFT, height);
+  } else if (active) {
+    canvas.gfx().drawBox(0, y, width, height);
+  }
+  canvas.gfx().setCursor(LAYOUT_LABEL_LEFT + LAYOUT_LABEL_MARGIN, y);
+  canvas.gfx().print(_label);
+}
+
+BackItem::BackItem(String label) :
+    Item(std::move(label)) {}
+
+bool BackItem::click(Context& context) {
+  context.requestPop();
+  return false;
 }
 
 NavigateItem::NavigateItem(String label, SelectCallback selectCallback) :
     Item(std::move(label)),
     _selectCallback(std::move(selectCallback)) {}
 
-bool NavigateItem::select(Context& context) {
+bool NavigateItem::click(Context& context) {
   context.requestPush(_selectCallback());
   return false;
+}
+
+TintItem::TintItem(String label, GetCallback getCallback, SetCallback setCallback) :
+    NumericItem(std::move(label), std::move(getCallback), std::move(setCallback),
+    TINT_MIN, TINT_MAX, 1) {}
+
+void TintItem::draw(Context& context, Canvas& canvas, bool active, bool editing,
+    uint32_t y, uint32_t width, uint32_t height) {
+  NumericItem::draw(context, canvas, active, editing, y, width, height);
+  if (active) {
+    canvas.setKnobColor(makeKnobColor(getValue(), 6));
+  }
+}
+
+void TintItem::printValue(Print& printer, tint_t value) {
+  printTint(printer, value);
+}
+
+BrightnessItem::BrightnessItem(String label, GetCallback getCallback, SetCallback setCallback) :
+    NumericItem(std::move(label), std::move(getCallback), std::move(setCallback),
+    BRIGHTNESS_MIN, BRIGHTNESS_MAX, 1) {}
+
+void BrightnessItem::draw(Context& context, Canvas& canvas, bool active, bool editing,
+    uint32_t y, uint32_t width, uint32_t height) {
+  NumericItem::draw(context, canvas, active, editing, y, width, height);
+  if (active) {
+    canvas.setKnobColor(makeKnobColor(TINT_WHITE, getValue()));
+  }
+}
+
+void BrightnessItem::printValue(Print& printer, brightness_t value) {
+  printBrightness(printer, value);
 }
