@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <vector>
+#include <utility>
 
 #include <Arduino.h>
 
@@ -160,7 +161,7 @@ private:
   void endDraw();
   void activity();
 
-  static constexpr ssize_t MAX_STATE_STACK_DEPTH = 10;
+  static constexpr ssize_t MAX_STATE_STACK_DEPTH = 5;
 
   Binding* const _binding;
   Canvas _canvas;
@@ -427,3 +428,71 @@ protected:
 template <unsigned addr>
 BrightnessItem::BrightnessItem(String label, Setting<brightness_t, addr>) :
     BrightnessItem(label, Setting<brightness_t, addr>::get, Setting<brightness_t, addr>::set) {}
+
+// Traits for ChoiceItem value types.
+// Must have the following members:
+// - static constexpr T min = first value;
+// - static constexpr T max = last value;
+// - static const char* toString(T value);
+template <typename T>
+struct ChoiceTraits;
+
+// A menu item for enumerated values.
+// Must define a corresponding ChoiceTraits<T> specialization for each value type.
+template <typename T>
+class ChoiceItem : public ValueItem<T> {
+public:
+  using Traits = ChoiceTraits<T>;
+  using GetCallback = T (*)();
+  using SetCallback = void (*)(T);
+
+  ChoiceItem(String label, GetCallback getCallback, SetCallback setCallback);
+
+  template <unsigned addr>
+  ChoiceItem(String label, Setting<T, addr>);
+  
+  ~ChoiceItem() override = default;
+
+protected:
+  T getValue() override;
+  void setValue(T value) override;
+  T addDeltaWithRollover(T value, int32_t delta) override;
+  void printValue(Print& printer, T value) override;
+
+private:
+  const GetCallback _getCallback;
+  const SetCallback _setCallback;
+  T _polledValue;
+};
+
+template <typename T>
+ChoiceItem<T>::ChoiceItem(String label, GetCallback getCallback, SetCallback setCallback) :
+    ValueItem<T>(std::move(label)),
+    _getCallback(std::move(getCallback)),
+    _setCallback(std::move(setCallback)) {}
+
+template <typename T>
+template <unsigned addr>
+ChoiceItem<T>::ChoiceItem(String label, Setting<T, addr>) :
+    ChoiceItem(std::move(label), Setting<T, addr>::get, Setting<T, addr>::set) {}
+
+template <typename T>
+T ChoiceItem<T>::getValue() {
+  return _getCallback();
+}
+
+template <typename T>
+void ChoiceItem<T>::setValue(T value) {
+  _setCallback(value);
+}
+
+template <typename T>
+T ChoiceItem<T>::addDeltaWithRollover(T value, int32_t delta) {
+  using U = std::underlying_type_t<T>;
+  return T(::addDeltaWithRollover<U>(U(value), U(Traits::min), U(Traits::max), U(1), delta));
+}
+
+template <typename T>
+void ChoiceItem<T>::printValue(Print& printer, T value) {
+  printer.print(Traits::toString(value));
+}

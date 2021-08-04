@@ -13,6 +13,7 @@ inline void assert(bool condition) {
 void printDateAndTime(Print& printer, time_t time);
 
 // Linear RGB color
+struct RGBW;
 struct RGB {
   uint8_t r, g, b;
 
@@ -25,6 +26,8 @@ struct RGB {
   }
 
   bool operator!=(const RGB& other) const { return !(*this == other); }
+
+  inline RGBW toRGBW() const;
 };
 
 RGB colorWheel(uint8_t pos);
@@ -43,6 +46,10 @@ struct RGBW {
 
   bool operator!=(const RGBW& other) const { return !(*this == other); }
 };
+
+inline RGBW RGB::toRGBW() const {
+  return RGBW{r, g, b, 0};
+}
 
 // Lightness, Chroma, Hue representation
 // More perceptually uniform than HSV though not all colors can be represented

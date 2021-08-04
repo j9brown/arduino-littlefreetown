@@ -72,3 +72,17 @@ public:
     return Settings::write<T>(addr, std::move(value));
   }
 };
+
+// Accessor for an array of settings stored in EEPROM.
+// Settings must not overlap in memory.
+template<typename T, unsigned addr, unsigned count>
+class SettingArray {
+public:
+  static T getAt(size_t i) {
+    return Settings::read<T>(addr + sizeof(T) * i);
+  }
+
+  static void setAt(size_t i, T value) {
+    return Settings::write<T>(addr + sizeof(T) * i, std::move(value));
+  }
+};

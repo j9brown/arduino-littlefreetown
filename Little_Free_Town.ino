@@ -1,9 +1,15 @@
 /*
  * Wiring:
- * - see panel.3
+ * - see panel.h
  * - pin 3: LEDs
+ * - pin 23: battery monitor
+ *           100 K resistor to Vin
+ *           100 K resistor to GND
+ *           100 nF capacitor to GND
+ * - cut trace between Vin and USB if using battery
  */
 
+#include <algorithm>
 #include <memory>
 
 #include <Adafruit_NeoPixel.h>
@@ -16,7 +22,48 @@
 #include "ui.h"
 #include "utils.h"
 
+enum class StrandTestPattern : uint8_t {
+  DISABLED, WHITE, RAINBOW
+};
+
+template <>
+struct ChoiceTraits<StrandTestPattern> {
+  static constexpr StrandTestPattern min = StrandTestPattern::DISABLED;
+  static constexpr StrandTestPattern max = StrandTestPattern::RAINBOW;
+  
+  static const char* toString(StrandTestPattern value) {
+    switch (value) {
+      default:
+      case StrandTestPattern::DISABLED: return "Disabled";
+      case StrandTestPattern::WHITE: return "White";
+      case StrandTestPattern::RAINBOW: return "Rainbow";
+    }
+  }
+};
+
+enum class OnOff : uint8_t {
+  OFF, ON
+};
+
+template <>
+struct ChoiceTraits<OnOff> {
+  static constexpr OnOff min = OnOff::OFF;
+  static constexpr OnOff max = OnOff::ON;
+  
+  static const char* toString(OnOff value) {
+    switch (value) {
+      default:
+      case OnOff::OFF: return "Off";
+      case OnOff::ON: return "On";
+    }
+  }
+};
+
 namespace {
+using vbat_t = uint8_t;
+constexpr time_t BATTERY_HISTORY_INTERVAL = 60 * 15; // sample every 15 minutes
+constexpr unsigned BATTERY_HISTORY_LENGTH = 256;
+
 const uint32_t SETTINGS_SCHEMA_VERSION = 2;
 Setting<uint8_t, 0> activityTimeoutSeconds;
 Setting<uint8_t, 1> dawnHour;
@@ -25,12 +72,15 @@ Setting<uint8_t, 3> nightHour;
 Setting<brightness_t, 4> daytimeBrightness;
 Setting<brightness_t, 5> eveningBrightness;
 Setting<brightness_t, 6> nighttimeBrightness;
+Setting<OnOff, 7> lightsOn;
 Setting<tint_t, 100> museumLightTint;
 Setting<brightness_t, 101> museumLightBrightness;
 Setting<tint_t, 200> libraryLightTint;
 Setting<brightness_t, 201> libraryLightBrightness;
+SettingArray<vbat_t, 1000, BATTERY_HISTORY_LENGTH> batteryHistory;
 Setting<uint8_t, 2000> testSetting1;
 Setting<int8_t, 2001> testSetting2;
+Setting<StrandTestPattern, 2002> strandTestPattern;
 
 void resetSettings() {
   activityTimeoutSeconds.set(30);
@@ -40,12 +90,14 @@ void resetSettings() {
   daytimeBrightness.set(BRIGHTNESS_MAX);
   eveningBrightness.set(BRIGHTNESS_MAX);
   nighttimeBrightness.set(BRIGHTNESS_MAX);
+  lightsOn.set(OnOff::ON);
   museumLightTint.set(TINT_WHITE);
   museumLightBrightness.set(BRIGHTNESS_MAX);
   libraryLightTint.set(TINT_WHITE);
   libraryLightBrightness.set(BRIGHTNESS_MAX);
   testSetting1.set(0);
   testSetting2.set(0);
+  strandTestPattern.set(StrandTestPattern::DISABLED);
 }
 
 Settings settings;
@@ -64,6 +116,8 @@ constexpr unsigned LIGHTS_TOTAL_COUNT = 22;
 Adafruit_NeoPixel lights(LIGHTS_TOTAL_COUNT, LIGHTS_PIN, NEO_GRBW | NEO_KHZ800);
 RGBW oldLights[LIGHTS_TOTAL_COUNT];
 RGBW newLights[LIGHTS_TOTAL_COUNT];
+
+constexpr int VBAT_PIN = A9;
 
 enum class TimeOfDay {
   NIGHTTIME,
@@ -99,6 +153,31 @@ brightness_t brightnessForTimeOfDay() {
   }
   return 1.0f;
 }
+
+// Battery voltage measured in increments of 10 mV minus 3 V
+// range 3.00 V to 5.55 V, assumes 12 bit analog read resolution
+uint32_t batterySampleTime = 0;
+vbat_t batterySample;
+
+vbat_t readBattery() {
+  uint32_t t = millis() >> 7; // don't sample any faster than about 7 Hz to avoid draining the capacitor
+  if (t != batterySampleTime) {
+    constexpr uint32_t vref = 331; // 3.31 V
+    batterySampleTime = t;
+    uint32_t voltage = analogRead(VBAT_PIN) * vref / 2047;
+    batterySample = vbat_t(std::min(std::max(voltage, 300UL), 555UL) - 300UL);
+  }
+  return batterySample;
+}
+
+uint32_t batteryPeriod() {
+   return (now() / BATTERY_HISTORY_INTERVAL) % BATTERY_HISTORY_LENGTH;
+}
+
+float batteryVoltage(vbat_t value) {
+  return (value + 300) * 0.01f;
+}
+
 } // namespace
 
 template <typename Fn>
@@ -189,6 +268,7 @@ std::unique_ptr<Menu> makeTimeMenu() {
 std::unique_ptr<Menu> makePowerSavingMenu() {
   auto menu = std::make_unique<Menu>();
   menu->addItem(std::make_unique<Item>("* POWER *"));
+  menu->addItem(std::make_unique<ChoiceItem<OnOff>>("Lights", lightsOn));
   menu->addItem(std::make_unique<NumericItem<uint8_t>>("Dawn Hour",
     dawnHour, 0, 23, 1));
   menu->addItem(std::make_unique<NumericItem<uint8_t>>("Dusk Hour",
@@ -206,6 +286,96 @@ std::unique_ptr<Menu> makePowerSavingMenu() {
   return menu;
 }
 
+class BatteryMonitor : public Scene {
+public:
+  BatteryMonitor() {}
+  virtual ~BatteryMonitor() override {}
+
+  void poll(Context& context) override;
+  void draw(Context& context, Canvas& canvas) override;
+  bool input(Context& context, const InputEvent& event) override;
+
+private:
+  static constexpr uint32_t DISPLAY_WIDTH = 128;
+  static constexpr uint32_t DISPLAY_HEIGHT = 64;
+  static constexpr uint32_t CHART_WIDTH = 100;
+  static constexpr uint32_t CHART_HEIGHT = 36;
+  static constexpr uint32_t CHART_X = DISPLAY_WIDTH - CHART_WIDTH - 1;
+  static constexpr uint32_t CHART_Y = DISPLAY_HEIGHT - CHART_HEIGHT - 11;
+  static constexpr uint32_t SCROLL_MIN = 0;
+  static constexpr uint32_t SCROLL_MAX = BATTERY_HISTORY_LENGTH - CHART_WIDTH;
+  static constexpr float VOLTAGE_MIN = 3.2f;
+  static constexpr float VOLTAGE_MAX = 4.4f;
+  static constexpr uint32_t DIVISION_MINOR = (60 * 60) / BATTERY_HISTORY_INTERVAL; // every hour
+  static constexpr uint32_t DIVISION_MAJOR = DIVISION_MINOR * 12;
+
+  time_t _time = 0;
+  vbat_t _level = 0;
+  uint32_t _scroll = SCROLL_MAX;
+};
+
+void BatteryMonitor::poll(Context& context) {
+  time_t t = now();
+  if (t != _time) {
+    _time = t;
+    _level = readBattery();
+    context.requestDraw();
+  }
+}
+
+void BatteryMonitor::draw(Context& context, Canvas& canvas) {
+  canvas.gfx().setCursor(1, 0);
+  canvas.gfx().print("* BATTERY: ");
+  canvas.gfx().print(batteryVoltage(_level), 2);
+  canvas.gfx().print(" V *");
+
+  canvas.gfx().setFont(u8g2_font_4x6_tr);
+
+  // Draw the Y axis and labels
+  canvas.gfx().drawLine(CHART_X - 1, CHART_Y, CHART_X - 1, CHART_Y + CHART_HEIGHT - 1);
+  canvas.gfx().drawStr(2, CHART_Y - 3, "4.4 V");
+  canvas.gfx().drawLine(CHART_X - 4, CHART_Y, CHART_X - 2, CHART_Y);
+  canvas.gfx().drawStr(2, CHART_Y + CHART_HEIGHT - 1 - 3, "3.2 V");
+  canvas.gfx().drawLine(CHART_X - 4, CHART_Y + CHART_HEIGHT - 1, CHART_X - 2, CHART_Y + CHART_HEIGHT - 1);
+
+  // Draw the chart and X axis labels
+  uint32_t currentPeriod = batteryPeriod();
+  for (uint32_t pos = 0; pos < CHART_WIDTH; pos++) {
+    uint32_t index = pos + _scroll;
+    uint32_t period = (index + currentPeriod + 1) % BATTERY_HISTORY_LENGTH;
+    float voltage = std::min(std::max(batteryVoltage(batteryHistory.getAt(period)), VOLTAGE_MIN), VOLTAGE_MAX);
+    uint32_t elev = (voltage - VOLTAGE_MIN) * CHART_HEIGHT / (VOLTAGE_MAX - VOLTAGE_MIN);
+    uint32_t x = pos + CHART_X;
+    canvas.gfx().drawBox(x, CHART_Y + CHART_HEIGHT - 1 - elev, 1, elev + 1);
+
+    uint32_t age = BATTERY_HISTORY_LENGTH - index - 1;
+    if ((age % DIVISION_MAJOR) == 0) {
+      canvas.gfx().drawLine(x, CHART_Y + CHART_HEIGHT, x, CHART_Y + CHART_HEIGHT + 3);
+      String text;
+      text.append(age / DIVISION_MINOR);
+      text.append('h');
+      canvas.gfx().drawStr(x - canvas.gfx().getStrWidth(text.c_str()) + 1, CHART_Y + CHART_HEIGHT + 4, text.c_str());
+    } else if ((age % DIVISION_MINOR) == 0) {
+      canvas.gfx().drawLine(x, CHART_Y + CHART_HEIGHT, x, CHART_Y + CHART_HEIGHT + 1);
+    }
+  }
+}
+
+bool BatteryMonitor::input(Context& context, const InputEvent& event) {
+  switch (event.type) {
+    case InputType::ROTATE:
+      _scroll = std::min(std::max(int32_t(_scroll) + event.value * 4, int32_t(SCROLL_MIN)), int32_t(SCROLL_MAX));
+      context.requestDraw();
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::unique_ptr<BatteryMonitor> makeBatteryMonitorScene() {
+  return std::make_unique<BatteryMonitor>();
+}
+
 class BoardTest : public Scene {
 public:
   BoardTest() {}
@@ -219,7 +389,7 @@ private:
   String _message = "---";
   uint8_t _index = 0;
   uint8_t _values[2] = { 200, 40 };
-  time_t _time;
+  time_t _time = 0;
 };
 
 void BoardTest::poll(Context& context) {
@@ -303,6 +473,13 @@ std::unique_ptr<Menu> makeEepromTestMenu() {
   return menu;
 }
 
+std::unique_ptr<Menu> makeStrandTestMenu() {
+  auto menu = std::make_unique<Menu>();
+  menu->addItem(std::make_unique<Item>("* STRAND TEST *"));
+  menu->addItem(std::make_unique<ChoiceItem<StrandTestPattern>>("Pattern", strandTestPattern));
+  return menu;
+}
+
 std::unique_ptr<Menu> makeFactoryResetMenu() {
   auto menu = std::make_unique<Menu>();
   menu->addItem(std::make_unique<Item>("* FACTORY RESET *"));
@@ -314,8 +491,10 @@ std::unique_ptr<Menu> makeFactoryResetMenu() {
 std::unique_ptr<Menu> makeDiagnosticsMenu() {
   auto menu = std::make_unique<Menu>();
   menu->addItem(std::make_unique<Item>("* DIAGNOSTICS *"));
+  menu->addItem(std::make_unique<NavigateItem>("Battery Monitor", makeBatteryMonitorScene));
   menu->addItem(std::make_unique<NavigateItem>("Board Test", makeBoardTestScene));
   menu->addItem(std::make_unique<NavigateItem>("EEPROM Test", makeEepromTestMenu));
+  menu->addItem(std::make_unique<NavigateItem>("Strand Test", makeStrandTestMenu));
   menu->addItem(std::make_unique<NavigateItem>("Factory Reset", makeFactoryResetMenu));
   return menu;
 }
@@ -345,11 +524,40 @@ void renderLibraryLights(float scale) {
   }  
 }
 
-void updateLights() {
-  const float scale = brightnessForTimeOfDay() * 0.1f;
-  renderMuseumLights(scale);
-  renderLibraryLights(scale);
+void renderLights() {
+  switch (strandTestPattern.get()) {
+    default:
+    case StrandTestPattern::DISABLED: {
+      if (lightsOn.get() == OnOff::ON) {
+        const float scale = brightnessForTimeOfDay() * 0.1f;
+        renderMuseumLights(scale);
+        renderLibraryLights(scale);
+      } else {
+        for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
+          newLights[i] = RGBW{};
+        }
+      }
+      break;
+    }
+    case StrandTestPattern::WHITE: {
+      uint8_t pos = millis() >> 4;
+      for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
+        newLights[i] = RGBW{0, 0, 0, uint8_t(pos + i)};
+      }
+      break;
+    }
+    case StrandTestPattern::RAINBOW: {
+      uint8_t pos = millis() >> 4;
+      for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
+        newLights[i] = colorWheel(pos + i).toRGBW();
+      }
+      break;
+    }
+  }  
+}
 
+void updateLights() {
+  renderLights();
   bool changed = false;
   for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
     changed |= oldLights[i] != newLights[i];
@@ -361,6 +569,22 @@ void updateLights() {
     }
     lights.show();
   }  
+}
+
+void updateBatteryHistory() {
+  static uint32_t lastPeriod = 0;
+  uint32_t period = batteryPeriod();
+  if (period != lastPeriod) {
+    vbat_t level = readBattery();
+    lastPeriod = period;
+    batteryHistory.setAt(period, level);
+
+    Serial.print("Battery: ");
+    Serial.print(batteryVoltage(level), 2);
+    Serial.print(" V at ");
+    printDateAndTime(Serial, now());
+    Serial.println();
+  }
 }
 
 void setup() {
@@ -390,6 +614,9 @@ void setup() {
   panel.begin();
   stage.begin(makeRootMenu());
   lights.begin();
+
+  // Initialize battery monitor
+  analogReadResolution(12);
 }
 
 void loop() {
@@ -398,4 +625,5 @@ void loop() {
   panel.update();
   stage.update();
   updateLights();
+  updateBatteryHistory();
 }

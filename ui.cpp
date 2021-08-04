@@ -59,8 +59,11 @@ void Stage::update() {
     _needPoll = true;
     return;
   } else {
-    _context._requestedPop = false;
     _context._requestedHome = false;
+    if (_stateIndex == 0 && _context._requestedPop) {
+      _context.requestSleep();
+    }
+    _context._requestedPop = false;
   }
 
   // Handle push
