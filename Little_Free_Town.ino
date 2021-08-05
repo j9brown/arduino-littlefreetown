@@ -3,7 +3,7 @@
  * - see panel.h
  * - pin 3: LEDs
  * - pin 23: battery monitor
- *           100 K resistor to Vin
+ *           100 K resistor to Vbat
  *           100 K resistor to GND
  *           100 nF capacitor to GND
  * - cut trace between Vin and USB if using battery
@@ -59,6 +59,27 @@ struct ChoiceTraits<OnOff> {
   }
 };
 
+enum class LowBattery : uint8_t {
+  DISABLED, V3_3, V3_4, V3_5, V3_6
+};
+
+template <>
+struct ChoiceTraits<LowBattery> {
+  static constexpr LowBattery min = LowBattery::DISABLED;
+  static constexpr LowBattery max = LowBattery::V3_6;
+  
+  static const char* toString(LowBattery value) {
+    switch (value) {
+      default:
+      case LowBattery::DISABLED: return "Disabled";
+      case LowBattery::V3_3: return "3.3 V";
+      case LowBattery::V3_4: return "3.4 V";
+      case LowBattery::V3_5: return "3.5 V";
+      case LowBattery::V3_6: return "3.6 V";
+    }
+  }
+};
+
 namespace {
 using vbat_t = uint8_t;
 constexpr time_t BATTERY_HISTORY_INTERVAL = 60 * 15; // sample every 15 minutes
@@ -73,6 +94,7 @@ Setting<brightness_t, 4> daytimeBrightness;
 Setting<brightness_t, 5> eveningBrightness;
 Setting<brightness_t, 6> nighttimeBrightness;
 Setting<OnOff, 7> lightsOn;
+Setting<LowBattery, 8> lowBatteryCutoff;
 Setting<tint_t, 100> museumLightTint;
 Setting<brightness_t, 101> museumLightBrightness;
 Setting<tint_t, 200> libraryLightTint;
@@ -91,6 +113,7 @@ void resetSettings() {
   eveningBrightness.set(BRIGHTNESS_MAX);
   nighttimeBrightness.set(BRIGHTNESS_MAX);
   lightsOn.set(OnOff::ON);
+  lowBatteryCutoff.set(LowBattery::V3_4);
   museumLightTint.set(TINT_WHITE);
   museumLightBrightness.set(BRIGHTNESS_MAX);
   libraryLightTint.set(TINT_WHITE);
@@ -176,6 +199,37 @@ uint32_t batteryPeriod() {
 
 float batteryVoltage(vbat_t value) {
   return (value + 300) * 0.01f;
+}
+
+bool isLowBattery(LowBattery cutoff, vbat_t hysteresis) {
+  switch (cutoff) {
+    default:
+    case LowBattery::DISABLED:
+      return false;
+    case LowBattery::V3_3:
+      return readBattery() < 30 + hysteresis;
+    case LowBattery::V3_4:
+      return readBattery() < 40 + hysteresis;
+    case LowBattery::V3_5:
+      return readBattery() < 50 + hysteresis;
+    case LowBattery::V3_6:
+      return readBattery() < 60 + hysteresis;
+  }
+}
+
+LowBattery currentLowBatteryCutoff;
+bool currentLowBatteryState;
+
+bool isLowBatteryWithHysteresis() {
+  LowBattery setting = lowBatteryCutoff.get();
+  if (currentLowBatteryCutoff != setting) {
+    currentLowBatteryCutoff = setting;
+    currentLowBatteryState = false;
+  }
+
+  currentLowBatteryState = isLowBattery(currentLowBatteryCutoff,
+      currentLowBatteryState ? 5 : 0); // add hysteresis
+  return currentLowBatteryState;
 }
 
 } // namespace
@@ -283,6 +337,7 @@ std::unique_ptr<Menu> makePowerSavingMenu() {
     nighttimeBrightness));
   menu->addItem(std::make_unique<NumericItem<uint8_t>>("Display Timeout (s)",
     activityTimeoutSeconds, 0, 240, 10));
+  menu->addItem(std::make_unique<ChoiceItem<LowBattery>>("Low Battery Cutoff", lowBatteryCutoff));
   return menu;
 }
 
@@ -335,6 +390,9 @@ void BatteryMonitor::draw(Context& context, Canvas& canvas) {
   canvas.gfx().drawLine(CHART_X - 1, CHART_Y, CHART_X - 1, CHART_Y + CHART_HEIGHT - 1);
   canvas.gfx().drawStr(2, CHART_Y - 3, "4.4 V");
   canvas.gfx().drawLine(CHART_X - 4, CHART_Y, CHART_X - 2, CHART_Y);
+  uint32_t v37elev = (3.7 - VOLTAGE_MIN) * CHART_HEIGHT / (VOLTAGE_MAX - VOLTAGE_MIN);
+  canvas.gfx().drawStr(2, CHART_Y + CHART_HEIGHT - 1 - v37elev - 3, "3.7 V");
+  canvas.gfx().drawLine(CHART_X - 4, CHART_Y + CHART_HEIGHT - 1 - v37elev, CHART_X - 2, CHART_Y + CHART_HEIGHT - 1 - v37elev);
   canvas.gfx().drawStr(2, CHART_Y + CHART_HEIGHT - 1 - 3, "3.2 V");
   canvas.gfx().drawLine(CHART_X - 4, CHART_Y + CHART_HEIGHT - 1, CHART_X - 2, CHART_Y + CHART_HEIGHT - 1);
 
@@ -525,6 +583,12 @@ void renderLibraryLights(float scale) {
 }
 
 void renderLights() {
+  for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
+    newLights[i] = RGBW{};
+  }
+
+  if (isLowBatteryWithHysteresis()) return;
+
   switch (strandTestPattern.get()) {
     default:
     case StrandTestPattern::DISABLED: {
@@ -532,10 +596,6 @@ void renderLights() {
         const float scale = brightnessForTimeOfDay() * 0.1f;
         renderMuseumLights(scale);
         renderLibraryLights(scale);
-      } else {
-        for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
-          newLights[i] = RGBW{};
-        }
       }
       break;
     }
