@@ -1,4 +1,8 @@
 /*
+ * Required libraries:
+ *
+ * - Snooze
+ *
  * Wiring:
  * - see panel.h
  * - pin 0: DOOR1
@@ -18,7 +22,8 @@
 #include <memory>
 
 #include <Adafruit_NeoPixel.h>
-#include <Adafruit_SleepyDog.h>
+#include <Snooze.h>
+#include <SnoozeBlock.h>
 #include <Print.h>
 #include <TimeLib.h>
 
@@ -26,6 +31,8 @@
 #include "settings.h"
 #include "ui.h"
 #include "utils.h"
+
+#define USE_BUILTIN_LED 0
 
 enum class StrandTestPattern : uint8_t {
   DISABLED, WHITE, RAINBOW
@@ -100,6 +107,7 @@ Setting<brightness_t, 5> eveningBrightness;
 Setting<brightness_t, 6> nighttimeBrightness;
 Setting<OnOff, 7> lightsOn;
 Setting<LowBattery, 8> lowBatteryCutoff;
+Setting<OnOff, 9> sleepOn;
 Setting<tint_t, 100> museumLightTint;
 Setting<brightness_t, 101> museumLightBrightness;
 Setting<tint_t, 200> libraryLightTint;
@@ -119,6 +127,7 @@ void resetSettings() {
   nighttimeBrightness.set(BRIGHTNESS_MAX);
   lightsOn.set(OnOff::ON);
   lowBatteryCutoff.set(LowBattery::V3_4);
+  sleepOn.set(OnOff::ON);
   museumLightTint.set(TINT_WHITE);
   museumLightBrightness.set(BRIGHTNESS_MAX);
   libraryLightTint.set(TINT_WHITE);
@@ -148,6 +157,11 @@ RGBW newLights[LIGHTS_TOTAL_COUNT];
 bool oldLightsEnabled;
 
 constexpr int VBAT_PIN = A6;
+
+SnoozeDigital snoozeDigital;
+SnoozeUSBSerial snoozeUsbSerial;
+SnoozeTimer snoozeTimer;
+SnoozeBlock snoozeBlock(snoozeUsbSerial, snoozeDigital, snoozeTimer);
 
 enum class TimeOfDay {
   NIGHTTIME,
@@ -345,6 +359,7 @@ std::unique_ptr<Menu> makePowerSavingMenu() {
   menu->addItem(std::make_unique<NumericItem<uint8_t>>("Display Timeout (s)",
     activityTimeoutSeconds, 0, 240, 10));
   menu->addItem(std::make_unique<ChoiceItem<LowBattery>>("Low Battery Cutoff", lowBatteryCutoff));
+  menu->addItem(std::make_unique<ChoiceItem<OnOff>>("Sleep When Idle", sleepOn));
   return menu;
 }
 
@@ -681,10 +696,6 @@ void updateBatteryHistory() {
 }
 
 void setup() {
-  // Enable the watchdog timer with 1 second timeout
-  // Doesn't seem to work (reset call doesn't actually reset watchdog)
-  //Watchdog.enable(1000);
-  
   // Configure the time library to use the hardware RTC
   setSyncProvider([]() -> time_t { return Teensy3Clock.get(); } );
 
@@ -704,20 +715,48 @@ void setup() {
   settings.begin(SETTINGS_SCHEMA_VERSION, resetSettings);
 
   // Initialize the rest of the hardware.
-  panel.begin();
+  panel.begin(snoozeDigital);
   stage.begin(makeRootMenu());
   pinMode(LIGHTS_EN_PIN, OUTPUT);
   setLightsEnabled(false);
 
   // Initialize battery monitor
   analogReadResolution(12);
+
+  // Setup sleeping
+  // Periodically wake to update battery stats
+  snoozeTimer.setTimer(60000);
+#if USE_BUILTIN_LED
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+#endif
 }
 
 void loop() {
-  Watchdog.reset();
-  
   panel.update();
   stage.update();
   updateLights();
   updateBatteryHistory();
+
+  static uint32_t readyToSleepAt = 0;
+  if (sleepOn.get() == OnOff::ON && panel.canSleep() && stage.canSleep()) {
+    uint32_t time = millis();
+    if (!readyToSleepAt) {
+      readyToSleepAt = time;
+    } else if (time - readyToSleepAt >= 500) {
+#if USE_BUILTIN_LED
+      digitalWrite(LED_BUILTIN, LOW);
+#endif
+      // Go to sleep.  We can't use deepSleep() because not all of the inputs
+      // we need to monitor support low-level wakeups (see LLWU matrix in processor
+      // documentation).
+      Snooze.sleep(snoozeBlock);
+      readyToSleepAt = 0;
+    }
+  } else {
+    readyToSleepAt = 0;
+  }
+#if USE_BUILTIN_LED
+  digitalWrite(LED_BUILTIN, HIGH);
+#endif
 }

@@ -12,6 +12,7 @@
    Required libraries:
  
    - Adafruit_NeoPixel
+   - Snooze
    - MD_REncoder
    - Switch
    - U8g2
@@ -46,6 +47,7 @@
 #include <Arduino.h>
 #include <avdweb_Switch.h>
 #include <MD_REncoder.h>
+#include <Snooze.h>
 #include <U8g2lib.h>
 
 #include "utils.h"
@@ -63,7 +65,7 @@ public:
   ~Panel() = default;
 
   // Initialize the panel.
-  void begin();
+  void begin(SnoozeDigital& snoozeDigital);
 
   // Update the panel state.
   void update();
@@ -87,6 +89,9 @@ public:
 
   // Plays a tone of finite duration to the buzzer.
   void playTone(uint32_t freq, uint32_t millis);
+
+  // Returns true if it's ok to sleep now.
+  bool canSleep() const;
 
 private:
   Panel(const Panel&) = delete;

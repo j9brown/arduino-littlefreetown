@@ -86,6 +86,10 @@ public:
 
   inline millis_t frameTime() const { return _frameTime; }
 
+  bool isRequestPending() const {
+    return _requestedPop || _requestedHome || _requestedDraw || _requestedSleep || _requestedWake;
+  }
+
 private:
   Context(const Context&) = delete;
   Context(Context&&) = delete;
@@ -146,6 +150,8 @@ public:
 
   void begin(std::unique_ptr<Scene> scene);
   void update();
+
+  bool canSleep() const;
 
 private:
   struct State {

@@ -34,7 +34,7 @@ Panel::Panel() :
     _killButton(SW_KILL, INPUT) {
 }
 
-void Panel::begin() {
+void Panel::begin(SnoozeDigital& snoozeDigital) {
   assert(_self == nullptr);
   _self = this;
 
@@ -54,6 +54,13 @@ void Panel::begin() {
   _knobEncoder.begin();
   attachInterrupt(digitalPinToInterrupt(BTN_EN1), handleKnobRotation, CHANGE);
   attachInterrupt(digitalPinToInterrupt(BTN_EN2), handleKnobRotation, CHANGE);
+
+  // Configure snooze block
+  snoozeDigital.pinMode(BTN_ENC, INPUT_PULLUP, CHANGE);
+  snoozeDigital.pinMode(SW_KILL, INPUT, CHANGE);
+  // Not needed because the rotary encoder interrupts remain active during sleep
+  //snoozeDigital.pinMode(BTN_EN1, INPUT_PULLUP, CHANGE);
+  //snoozeDigital.pinMode(BTN_EN2, INPUT_PULLUP, CHANGE);
 }
 
 void Panel::update() {
@@ -111,4 +118,12 @@ void Panel::updateButton(Switch* button, volatile ButtonEvent* event) {
 
 void Panel::playTone(uint32_t freq, uint32_t millis) {
   tone(BEEP, freq, millis);
+}
+
+bool Panel::canSleep() const {
+  return _knobRotations == 0
+      && _knobButtonEvent == ButtonEvent::NONE
+      && _killButtonEvent == ButtonEvent::NONE
+      && digitalRead(BTN_ENC)
+      && digitalRead(SW_KILL);
 }

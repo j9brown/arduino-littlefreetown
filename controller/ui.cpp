@@ -156,6 +156,10 @@ void Stage::update() {
   }
 }
 
+bool Stage::canSleep() const {
+  return _asleep && !_context.isRequestPending();
+}
+
 void Stage::beginDraw() {
   _canvas.gfx().setFont(u8g2_font_miranda_nbp_tr);
   _canvas.gfx().clearBuffer();
