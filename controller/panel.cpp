@@ -5,21 +5,22 @@
 
 namespace {
 const u8g2_cb_t* LCD_ROTATION = U8G2_R2;
-const int LCD_CS = 15;
-const int LCD_A0 = 6;
-const int LCD_RST = 5;
-const int LCD_MOSI = 7;
+const int LCD_CS = 9;
+const int LCD_A0 = 8;
+const int LCD_RST = 7;
+const int LCD_MOSI = 11;
+const int LCD_MISO = 12;
 const int LCD_SCK = 14;
 
-const int LED_DIN = 4;
+const int LED_DIN = 5;
 
-const int SW_KILL = 2;
+const int SW_KILL = 18;
 
-const int BEEP = 9;
+const int BEEP = 6;
 
-const int BTN_ENC = 8;
-const int BTN_EN1 = 16;
-const int BTN_EN2 = 17;
+const int BTN_ENC = 19;
+const int BTN_EN1 = 15;
+const int BTN_EN2 = 16;
 } // namespace
 
 Panel* Panel::_self;
@@ -39,6 +40,7 @@ void Panel::begin() {
 
   // Reassign the SPI pins
   SPI.setMOSI(LCD_MOSI);
+  SPI.setMISO(LCD_MISO);
   SPI.setSCK(LCD_SCK);
 
   // Initialize the display

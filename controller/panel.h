@@ -22,22 +22,22 @@
    - EXP1-2 (GND)     -> any GND
    - EXP1-3           -> N/C
    - EXP1-4           -> N/C
-   - EXP1-5 (LED_DIN) -> pin 4 (PWM), 3.3 or 5 V, output
-   - EXP1-6 (LCD_RST) -> pin 5, 3.3 V, output
-   - EXP1-7 (LCD_A0)  -> pin 6, 3.3 V, output
-   - EXP1-8 (LCD_CS)  -> pin 15 (CS-ALT), 3.3 V, output
-   - EXP1-9 (BTN_ENC) -> pin 8, 3.3 V, input-pullup, active low
-   - EXP1-10 (BEEP)   -> pin 9 (PWM), 3.3 or 5 V, output
-   - EXP2-1 (SW_KILL) -> pin 2, 5 V, input, active low, board has pull up to VCC
+   - EXP1-5 (LED_DIN) -> pin 5 (PWM), 3.3 or 5 V, output
+   - EXP1-6 (LCD_RST) -> pin 7, 3.3 V, output
+   - EXP1-7 (LCD_A0)  -> pin 8, 3.3 V, output
+   - EXP1-8 (LCD_CS)  -> pin 9 (CS-ALT), 3.3 V, output
+   - EXP1-9 (BTN_ENC) -> pin 19, 3.3 V, input-pullup, active low
+   - EXP1-10 (BEEP)   -> pin 6 (PWM), 3.3 or 5 V, output
+   - EXP2-1 (SW_KILL) -> pin 18, 5 V, input, active low, board has pull up to VCC
    - EXP2-2 (GND)     -> any GND
    - EXP2-3 (SW_RST)  -> N/C
    - EXP2-4 (CD)      -> N/C
-   - EXP2-5 (MOSI)    -> pin 7 (DOUT-ALT), 3.3 V, output
-   - EXP2-6 (BTN_EN2) -> pin 17, 3.3 V, input-pullup
+   - EXP2-5 (MOSI)    -> pin 11 (DOUT), 3.3 V, output
+   - EXP2-6 (BTN_EN2) -> pin 16, 3.3 V, input-pullup
    - EXP2-7 (SS)      -> N/C
-   - EXP2-8 (BTN_EN1) -> pin 16, 3.3 V, input-pullup
+   - EXP2-8 (BTN_EN1) -> pin 15, 3.3 V, input-pullup
    - EXP2-9 (SCK)     -> pin 14 (SCK-ALT), 3.3 V, output
-   - EXP2-10 (MISO)   -> N/C
+   - EXP2-10 (MISO)   -> pin 12 (DIN), 3.3 V, input
 */
 
 #pragma once

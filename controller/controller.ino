@@ -1,11 +1,16 @@
 /*
  * Wiring:
  * - see panel.h
- * - pin 3: LEDs
- * - pin 23: battery monitor
+ * - pin 0: DOOR1
+ * - pin 1: DOOR2
+ * - pin 2: STRIP_LED_EN
+ * - pin 3: CHG
+ * - pin 4: PGOOD
+ * - pin 20/A6: BATTMON
  *           100 K resistor to Vbat
  *           100 K resistor to GND
  *           100 nF capacitor to GND
+ * - pin 21: STRIP_LED_DIN
  * - cut trace between Vin and USB if using battery
  */
 
@@ -130,7 +135,8 @@ Binding binding(&panel);
 Stage stage(&binding,
   [] { return activityTimeoutSeconds.get() * 1000UL; });
 
-constexpr int LIGHTS_PIN = 3;
+constexpr int LIGHTS_EN_PIN = 2;
+constexpr int LIGHTS_PIN = 21;
 constexpr unsigned LIGHTS_MUSEUM_FIRST = 0;
 constexpr unsigned LIGHTS_MUSEUM_COUNT = 11;
 constexpr unsigned LIGHTS_LIBRARY_FIRST = 11;
@@ -139,8 +145,9 @@ constexpr unsigned LIGHTS_TOTAL_COUNT = 22;
 Adafruit_NeoPixel lights(LIGHTS_TOTAL_COUNT, LIGHTS_PIN, NEO_GRBW | NEO_KHZ800);
 RGBW oldLights[LIGHTS_TOTAL_COUNT];
 RGBW newLights[LIGHTS_TOTAL_COUNT];
+bool oldLightsEnabled;
 
-constexpr int VBAT_PIN = A9;
+constexpr int VBAT_PIN = A6;
 
 enum class TimeOfDay {
   NIGHTTIME,
@@ -568,67 +575,93 @@ std::unique_ptr<Menu> makeRootMenu() {
   return menu;
 }
 
-void renderMuseumLights(float scale) {
+bool renderMuseumLights(float scale) {
   RGBW color = makeStripColor(museumLightTint.get(), museumLightBrightness.get()) * scale;
   for (size_t i = 0; i < LIGHTS_MUSEUM_COUNT; i++) {
     newLights[i + LIGHTS_MUSEUM_FIRST] = color;
-  }  
+  }
+  return true;
 }
 
-void renderLibraryLights(float scale) {
+bool renderLibraryLights(float scale) {
   RGBW color = makeStripColor(libraryLightTint.get(), libraryLightBrightness.get()) * scale;
   for (size_t i = 0; i < LIGHTS_LIBRARY_COUNT; i++) {
     newLights[i + LIGHTS_LIBRARY_FIRST] = color;
-  }  
+  }
+  return true;
 }
 
-void renderLights() {
+bool renderLights() {
+  if (isLowBatteryWithHysteresis()) return false;
+
   for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
     newLights[i] = RGBW{};
   }
 
-  if (isLowBatteryWithHysteresis()) return;
-
   switch (strandTestPattern.get()) {
     default:
     case StrandTestPattern::DISABLED: {
-      if (lightsOn.get() == OnOff::ON) {
-        const float scale = brightnessForTimeOfDay() * 0.1f;
-        renderMuseumLights(scale);
-        renderLibraryLights(scale);
-      }
-      break;
+      if (lightsOn.get() == OnOff::OFF) return false;
+
+      const float scale = brightnessForTimeOfDay() * 0.1f;
+      return renderMuseumLights(scale) && renderLibraryLights(scale);
     }
     case StrandTestPattern::WHITE: {
       uint8_t pos = millis() >> 4;
       for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
         newLights[i] = RGBW{0, 0, 0, uint8_t(pos + i)};
       }
-      break;
+      return true;
     }
     case StrandTestPattern::RAINBOW: {
       uint8_t pos = millis() >> 4;
       for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
         newLights[i] = colorWheel(pos + i).toRGBW();
       }
-      break;
+      return true;
     }
   }  
 }
 
+void setLightsEnabled(bool enabled) {
+  if (enabled) {
+    // Turn on the mosfet that drives LED GND and set the LED data pin
+    // to output mode.
+    digitalWrite(LIGHTS_EN_PIN, HIGH);
+    delay(1);
+    lights.begin();
+  } else {
+    // Turn off the mosfet that drives LED GND and also set the LED data
+    // pin to a high impedance state to prevent vampire current draw from
+    // the LEDs via the data pin while LED GND is floating.
+    pinMode(LIGHTS_PIN, INPUT);
+    digitalWrite(LIGHTS_EN_PIN, LOW);
+  }
+}
+
 void updateLights() {
-  renderLights();
   bool changed = false;
+
+  bool lightsEnabled = renderLights();
+  if (lightsEnabled != oldLightsEnabled) {
+    oldLightsEnabled = lightsEnabled;
+    changed = true;
+    setLightsEnabled(lightsEnabled);
+  }
+
+  if (!lightsEnabled) return;
+
   for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
     changed |= oldLights[i] != newLights[i];
   }
+
   if (changed) {
     for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
       oldLights[i] = newLights[i];
       lights.setPixelColor(i, newLights[i].r, newLights[i].g, newLights[i].b, newLights[i].w);
     }
     lights.show();
-  }  
+  }
 }
 
 void updateBatteryHistory() {
@@ -673,7 +706,8 @@ void setup() {
   // Initialize the rest of the hardware.
   panel.begin();
   stage.begin(makeRootMenu());
-  lights.begin();
+  pinMode(LIGHTS_EN_PIN, OUTPUT);
+  setLightsEnabled(false);
 
   // Initialize battery monitor
   analogReadResolution(12);
