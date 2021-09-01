@@ -35,7 +35,7 @@
 #define USE_BUILTIN_LED 0
 
 enum class StrandTestPattern : uint8_t {
-  DISABLED, WHITE, RAINBOW
+  DISABLED, WHITE, GLOW, RAINBOW
 };
 
 template <>
@@ -48,6 +48,7 @@ struct ChoiceTraits<StrandTestPattern> {
       default:
       case StrandTestPattern::DISABLED: return "Disabled";
       case StrandTestPattern::WHITE: return "White";
+      case StrandTestPattern::GLOW: return "Glow";
       case StrandTestPattern::RAINBOW: return "Rainbow";
     }
   }
@@ -91,6 +92,18 @@ struct ChoiceTraits<LowBattery> {
     }
   }
 };
+
+enum class LightState {
+  OFF, ON, ANIMATING
+};
+
+LightState mergeLightState(LightState a, LightState b) {
+  if (a == LightState::ANIMATING || b == LightState::ANIMATING)
+      return LightState::ANIMATING;
+  if (a == LightState::ON || b == LightState::ON)
+      return LightState::ON;
+  return LightState::OFF;
+}
 
 namespace {
 using vbat_t = uint8_t;
@@ -590,52 +603,65 @@ std::unique_ptr<Menu> makeRootMenu() {
   return menu;
 }
 
-bool renderMuseumLights(float scale) {
+LightState renderMuseumLights(float scale) {
   RGBW color = makeStripColor(museumLightTint.get(), museumLightBrightness.get()) * scale;
   for (size_t i = 0; i < LIGHTS_MUSEUM_COUNT; i++) {
     newLights[i + LIGHTS_MUSEUM_FIRST] = color;
   }
-  return true;
+  return LightState::ON;
 }
 
-bool renderLibraryLights(float scale) {
+LightState renderLibraryLights(float scale) {
   RGBW color = makeStripColor(libraryLightTint.get(), libraryLightBrightness.get()) * scale;
   for (size_t i = 0; i < LIGHTS_LIBRARY_COUNT; i++) {
     newLights[i + LIGHTS_LIBRARY_FIRST] = color;
   }
-  return true;
+  return LightState::ON;
 }
 
-bool renderLights() {
-  if (isLowBatteryWithHysteresis()) return false;
-
-  for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
-    newLights[i] = RGBW{};
-  }
-
+LightState renderStrandTest() {
   switch (strandTestPattern.get()) {
     default:
     case StrandTestPattern::DISABLED: {
-      if (lightsOn.get() == OnOff::OFF) return false;
-
-      const float scale = brightnessForTimeOfDay() * 0.1f;
-      return renderMuseumLights(scale) && renderLibraryLights(scale);
+      return LightState::OFF;
     }
     case StrandTestPattern::WHITE: {
+      for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
+        newLights[i] = RGBW{0, 0, 0, 255};
+      }
+      return LightState::ON;
+    }
+    case StrandTestPattern::GLOW: {
       uint8_t pos = millis() >> 4;
       for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
         newLights[i] = RGBW{0, 0, 0, uint8_t(pos + i)};
       }
-      return true;
+      return LightState::ANIMATING;
     }
     case StrandTestPattern::RAINBOW: {
       uint8_t pos = millis() >> 4;
       for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
         newLights[i] = colorWheel(pos + i).toRGBW();
       }
-      return true;
+      return LightState::ANIMATING;
     }
   }  
+}
+
+LightState renderLights() {
+  if (isLowBatteryWithHysteresis()) return LightState::OFF;
+
+  for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
+    newLights[i] = RGBW{};
+  }
+
+  LightState state = renderStrandTest();
+  if (state == LightState::OFF && lightsOn.get() != OnOff::OFF) {
+    const float scale = brightnessForTimeOfDay() * 0.1f;
+    state = renderMuseumLights(scale);
+    state = mergeLightState(state, renderLibraryLights(scale));
+  }
+  return state;
 }
 
 void setLightsEnabled(bool enabled) {
@@ -654,29 +680,31 @@ void setLightsEnabled(bool enabled) {
   }
 }
 
-void updateLights() {
+LightState updateLights() {
   bool changed = false;
 
-  bool lightsEnabled = renderLights();
+  LightState state = renderLights();
+  bool lightsEnabled = state != LightState::OFF;
   if (lightsEnabled != oldLightsEnabled) {
     oldLightsEnabled = lightsEnabled;
     changed = true;
     setLightsEnabled(lightsEnabled);
   }
 
-  if (!lightsEnabled) return;
-
-  for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
-    changed |= oldLights[i] != newLights[i];
-  }
-
-  if (changed) {
+  if (lightsEnabled) {
     for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
-      oldLights[i] = newLights[i];
-      lights.setPixelColor(i, newLights[i].r, newLights[i].g, newLights[i].b, newLights[i].w);
+      changed |= oldLights[i] != newLights[i];
     }
-    lights.show();
+  
+    if (changed) {
+      for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
+        oldLights[i] = newLights[i];
+        lights.setPixelColor(i, newLights[i].r, newLights[i].g, newLights[i].b, newLights[i].w);
+      }
+      lights.show();
+    }
   }
+  return state;
 }
 
 void updateBatteryHistory() {
@@ -733,13 +761,14 @@ void setup() {
 }
 
 void loop() {
+  updateBatteryHistory();
   panel.update();
   stage.update();
-  updateLights();
-  updateBatteryHistory();
+  LightState state = updateLights();
 
   static uint32_t readyToSleepAt = 0;
-  if (sleepOn.get() == OnOff::ON && panel.canSleep() && stage.canSleep()) {
+  if (sleepOn.get() == OnOff::ON && state != LightState::ANIMATING
+      && panel.canSleep() && stage.canSleep()) {
     uint32_t time = millis();
     if (!readyToSleepAt) {
       readyToSleepAt = time;
