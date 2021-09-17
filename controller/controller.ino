@@ -170,6 +170,8 @@ RGBW newLights[LIGHTS_TOTAL_COUNT];
 bool oldLightsEnabled;
 
 constexpr int VBAT_PIN = A6;
+constexpr int CHG_PIN = 3;
+constexpr int PGOOD_PIN = 4;
 
 SnoozeDigital snoozeDigital;
 SnoozeUSBSerial snoozeUsbSerial;
@@ -287,7 +289,7 @@ void clampDayOfMonth(TimeElements* te, bool rollover) {
 
 std::unique_ptr<Menu> makeMuseumMenu() {
   auto menu = std::make_unique<Menu>();
-  menu->addItem(std::make_unique<Item>("* MUSEUM *"));
+  menu->addItem(std::make_unique<TitleItem>("MUSEUM"));
   menu->addItem(std::make_unique<TintItem>("Light Tint", museumLightTint));
   menu->addItem(std::make_unique<BrightnessItem>("Light Brightness", museumLightBrightness));
   return menu;
@@ -295,7 +297,7 @@ std::unique_ptr<Menu> makeMuseumMenu() {
 
 std::unique_ptr<Menu> makeLibraryMenu() {
   auto menu = std::make_unique<Menu>();
-  menu->addItem(std::make_unique<Item>("* LIBRARY *"));
+  menu->addItem(std::make_unique<TitleItem>("LIBRARY"));
   menu->addItem(std::make_unique<TintItem>("Light Tint", libraryLightTint));
   menu->addItem(std::make_unique<BrightnessItem>("Light Brightness", libraryLightBrightness));
   return menu;
@@ -303,7 +305,7 @@ std::unique_ptr<Menu> makeLibraryMenu() {
 
 std::unique_ptr<Menu> makeTimeMenu() {
   auto menu = std::make_unique<Menu>();
-  menu->addItem(std::make_unique<Item>("* TIME *"));
+  menu->addItem(std::make_unique<TitleItem>("TIME"));
   menu->addItem(std::make_unique<NumericItem<int>>("Year",
     [] { return year(); },
     [] (int x) {
@@ -355,7 +357,7 @@ std::unique_ptr<Menu> makeTimeMenu() {
 
 std::unique_ptr<Menu> makePowerSavingMenu() {
   auto menu = std::make_unique<Menu>();
-  menu->addItem(std::make_unique<Item>("* POWER *"));
+  menu->addItem(std::make_unique<TitleItem>("POWER"));
   menu->addItem(std::make_unique<ChoiceItem<OnOff>>("Lights", lightsOn));
   menu->addItem(std::make_unique<NumericItem<uint8_t>>("Dawn Hour",
     dawnHour, 0, 23, 1));
@@ -395,13 +397,18 @@ private:
   static constexpr uint32_t SCROLL_MIN = 0;
   static constexpr uint32_t SCROLL_MAX = BATTERY_HISTORY_LENGTH - CHART_WIDTH;
   static constexpr float VOLTAGE_MIN = 3.2f;
-  static constexpr float VOLTAGE_MAX = 4.4f;
+  static constexpr float VOLTAGE_MAX = 4.2f;
   static constexpr uint32_t DIVISION_MINOR = (60 * 60) / BATTERY_HISTORY_INTERVAL; // every hour
   static constexpr uint32_t DIVISION_MAJOR = DIVISION_MINOR * 12;
+
+  enum class State {
+    DISCHARGING, CHARGING, POWERED
+  };
 
   time_t _time = 0;
   vbat_t _level = 0;
   uint32_t _scroll = SCROLL_MAX;
+  State _state = State::DISCHARGING;
 };
 
 void BatteryMonitor::poll(Context& context) {
@@ -411,19 +418,43 @@ void BatteryMonitor::poll(Context& context) {
     _level = readBattery();
     context.requestDraw();
   }
+
+  State newState = State::DISCHARGING;
+  if (!digitalRead(CHG_PIN)) {
+    newState = State::CHARGING;
+  } else if (!digitalRead(PGOOD_PIN)) {
+    newState = State::POWERED;
+  }
+  if (newState != _state) {
+    _state = newState;
+    context.requestDraw();
+  }
 }
 
 void BatteryMonitor::draw(Context& context, Canvas& canvas) {
   canvas.gfx().setCursor(1, 0);
-  canvas.gfx().print("* BATTERY: ");
+  canvas.gfx().setFont(TITLE_FONT);
+  canvas.gfx().print("BATTERY: ");
   canvas.gfx().print(batteryVoltage(_level), 2);
-  canvas.gfx().print(" V *");
+  canvas.gfx().print(" V ");
 
-  canvas.gfx().setFont(u8g2_font_4x6_tr);
+  canvas.gfx().setFont(u8g2_font_open_iconic_embedded_1x_t);
+  switch (_state) {
+    case State::CHARGING:
+      canvas.gfx().drawStr(109, 1, "C");
+      break;
+    case State::POWERED:
+      canvas.gfx().drawStr(109, 1, "B");
+      break;
+    default:
+      break;
+  }
+  canvas.gfx().drawStr(118, 1, _level < 50 ? "@" : "I");
 
   // Draw the Y axis and labels
+  canvas.gfx().setFont(u8g2_font_4x6_tr);
   canvas.gfx().drawLine(CHART_X - 1, CHART_Y, CHART_X - 1, CHART_Y + CHART_HEIGHT - 1);
-  canvas.gfx().drawStr(2, CHART_Y - 3, "4.4 V");
+  canvas.gfx().drawStr(2, CHART_Y - 3, "4.2 V");
   canvas.gfx().drawLine(CHART_X - 4, CHART_Y, CHART_X - 2, CHART_Y);
   uint32_t v37elev = (3.7 - VOLTAGE_MIN) * CHART_HEIGHT / (VOLTAGE_MAX - VOLTAGE_MIN);
   canvas.gfx().drawStr(2, CHART_Y + CHART_HEIGHT - 1 - v37elev - 3, "3.7 V");
@@ -526,7 +557,9 @@ bool BoardTest::input(Context& context, const InputEvent& event) {
 }
 
 void BoardTest::draw(Context& context, Canvas& canvas) {
-  canvas.gfx().drawStr(1, 0, "* BOARD TEST *");
+  canvas.gfx().setFont(TITLE_FONT);
+  canvas.gfx().drawStr(1, 0, "BOARD TEST");
+  canvas.gfx().setFont(DEFAULT_FONT);
 
   canvas.gfx().drawStr(1, 20, _message.c_str());
 
@@ -558,7 +591,7 @@ std::unique_ptr<BoardTest> makeBoardTestScene() {
 
 std::unique_ptr<Menu> makeEepromTestMenu() {
   auto menu = std::make_unique<Menu>();
-  menu->addItem(std::make_unique<Item>("* EEPROM TEST *"));
+  menu->addItem(std::make_unique<TitleItem>("EEPROM TEST"));
   menu->addItem(std::make_unique<NumericItem<uint8_t>>("Test Setting 1",
     testSetting1, 0, 100, 5));
   menu->addItem(std::make_unique<NumericItem<int8_t>>("Test Setting 2",
@@ -568,14 +601,14 @@ std::unique_ptr<Menu> makeEepromTestMenu() {
 
 std::unique_ptr<Menu> makeStrandTestMenu() {
   auto menu = std::make_unique<Menu>();
-  menu->addItem(std::make_unique<Item>("* STRAND TEST *"));
+  menu->addItem(std::make_unique<TitleItem>("STRAND TEST"));
   menu->addItem(std::make_unique<ChoiceItem<StrandTestPattern>>("Pattern", strandTestPattern));
   return menu;
 }
 
 std::unique_ptr<Menu> makeFactoryResetMenu() {
   auto menu = std::make_unique<Menu>();
-  menu->addItem(std::make_unique<Item>("* FACTORY RESET *"));
+  menu->addItem(std::make_unique<TitleItem>("FACTORY RESET"));
   menu->addItem(std::make_unique<BackItem>("Back Away Slowly..."));
   menu->addItem(std::make_unique<NavigateItem>("Erase All Settings!", Settings::eraseAndReboot));
   return menu;
@@ -583,7 +616,7 @@ std::unique_ptr<Menu> makeFactoryResetMenu() {
 
 std::unique_ptr<Menu> makeDiagnosticsMenu() {
   auto menu = std::make_unique<Menu>();
-  menu->addItem(std::make_unique<Item>("* DIAGNOSTICS *"));
+  menu->addItem(std::make_unique<TitleItem>("DIAGNOSTICS"));
   menu->addItem(std::make_unique<NavigateItem>("Battery Monitor", makeBatteryMonitorScene));
   menu->addItem(std::make_unique<NavigateItem>("Board Test", makeBoardTestScene));
   menu->addItem(std::make_unique<NavigateItem>("EEPROM Test", makeEepromTestMenu));
@@ -594,7 +627,7 @@ std::unique_ptr<Menu> makeDiagnosticsMenu() {
 
 std::unique_ptr<Menu> makeRootMenu() {
   auto menu = std::make_unique<Menu>();
-  menu->addItem(std::make_unique<Item>("* LITTLE FREE TOWN *"));
+  menu->addItem(std::make_unique<TitleItem>("LITTLE FREE TOWN"));
   menu->addItem(std::make_unique<NavigateItem>("Museum", makeMuseumMenu));
   menu->addItem(std::make_unique<NavigateItem>("Library", makeLibraryMenu));
   menu->addItem(std::make_unique<NavigateItem>("Time", makeTimeMenu));
@@ -749,6 +782,8 @@ void setup() {
   setLightsEnabled(false);
 
   // Initialize battery monitor
+  pinMode(CHG_PIN, INPUT);
+  pinMode(PGOOD_PIN, INPUT);
   analogReadResolution(12);
 
   // Setup sleeping

@@ -161,7 +161,7 @@ bool Stage::canSleep() const {
 }
 
 void Stage::beginDraw() {
-  _canvas.gfx().setFont(u8g2_font_miranda_nbp_tr);
+  _canvas.gfx().setFont(DEFAULT_FONT);
   _canvas.gfx().clearBuffer();
   _canvas.gfx().home();
   _canvas.gfx().setFontPosTop();
@@ -272,6 +272,16 @@ void Item::draw(Context& context, Canvas& canvas, bool active, bool editing,
   }
   canvas.gfx().setCursor(LAYOUT_LABEL_LEFT + LAYOUT_LABEL_MARGIN, y);
   canvas.gfx().print(_label);
+}
+
+TitleItem::TitleItem(String label) :
+    Item(std::move(label)) {}
+
+void TitleItem::draw(Context& context, Canvas& canvas, bool active, bool editing,
+    uint32_t y, uint32_t width, uint32_t height) {
+  canvas.gfx().setFont(TITLE_FONT);
+  Item::draw(context, canvas, active, editing, y, width, height);
+  canvas.gfx().setFont(DEFAULT_FONT);
 }
 
 BackItem::BackItem(String label) :

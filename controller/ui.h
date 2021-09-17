@@ -22,6 +22,12 @@ constexpr uint32_t LAYOUT_LABEL_LEFT = 0;
 constexpr uint32_t LAYOUT_LABEL_MARGIN = 1;
 constexpr uint32_t LAYOUT_VALUE_LEFT = 90;
 constexpr uint32_t LAYOUT_VALUE_MARGIN = 3;
+
+constexpr const uint8_t *DEFAULT_FONT = u8g2_font_miranda_nbp_tr;
+//constexpr const uint8_t *DEFAULT_FONT = u8g2_font_prospero_nbp_tr;
+constexpr const uint8_t *TITLE_FONT = u8g2_font_prospero_bold_nbp_tr;
+//constexpr const uint8_t *DEFAULT_FONT = u8g2_font_6x13_tr;
+//constexpr const uint8_t *TITLE_FONT = u8g2_font_6x13B_tr;
 } // namespace
 
 enum class InputType {
@@ -251,6 +257,15 @@ public:
 
 private:
   String const _label;
+};
+
+class TitleItem : public Item {
+public:
+  TitleItem(String label);
+  ~TitleItem() override = default;
+
+  void draw(Context& context, Canvas& canvas, bool active, bool editing,
+      uint32_t y, uint32_t width, uint32_t height) override;
 };
 
 class BackItem : public Item {
