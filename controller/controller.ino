@@ -617,7 +617,6 @@ std::unique_ptr<Menu> makeFactoryResetMenu() {
 std::unique_ptr<Menu> makeDiagnosticsMenu() {
   auto menu = std::make_unique<Menu>();
   menu->addItem(std::make_unique<TitleItem>("DIAGNOSTICS"));
-  menu->addItem(std::make_unique<NavigateItem>("Battery Monitor", makeBatteryMonitorScene));
   menu->addItem(std::make_unique<NavigateItem>("Board Test", makeBoardTestScene));
   menu->addItem(std::make_unique<NavigateItem>("EEPROM Test", makeEepromTestMenu));
   menu->addItem(std::make_unique<NavigateItem>("Strand Test", makeStrandTestMenu));
@@ -632,6 +631,7 @@ std::unique_ptr<Menu> makeRootMenu() {
   menu->addItem(std::make_unique<NavigateItem>("Library", makeLibraryMenu));
   menu->addItem(std::make_unique<NavigateItem>("Time", makeTimeMenu));
   menu->addItem(std::make_unique<NavigateItem>("Power Saving", makePowerSavingMenu));
+  menu->addItem(std::make_unique<NavigateItem>("Battery Monitor", makeBatteryMonitorScene));
   menu->addItem(std::make_unique<NavigateItem>("Diagnostics", makeDiagnosticsMenu));
   return menu;
 }
