@@ -22,6 +22,7 @@
 #include <memory>
 
 #include <Adafruit_NeoPixel.h>
+#include <avdweb_Switch.h>
 #include <Snooze.h>
 #include <SnoozeBlock.h>
 #include <Print.h>
@@ -124,7 +125,8 @@ Setting<OnOff, 9> sleepOn;
 Setting<tint_t, 100> museumLightTint;
 Setting<brightness_t, 101> museumLightBrightness;
 Setting<tint_t, 200> libraryLightTint;
-Setting<brightness_t, 201> libraryLightBrightness;
+Setting<brightness_t, 201> libraryLightBrightnessWhenOpen;
+Setting<brightness_t, 202> libraryLightBrightnessWhenClosed;
 SettingArray<vbat_t, 1000, BATTERY_HISTORY_LENGTH> batteryHistory;
 Setting<uint8_t, 2000> testSetting1;
 Setting<int8_t, 2001> testSetting2;
@@ -144,7 +146,8 @@ void resetSettings() {
   museumLightTint.set(TINT_WHITE);
   museumLightBrightness.set(BRIGHTNESS_MAX);
   libraryLightTint.set(TINT_WHITE);
-  libraryLightBrightness.set(BRIGHTNESS_MAX);
+  libraryLightBrightnessWhenOpen.set(BRIGHTNESS_MAX);
+  libraryLightBrightnessWhenClosed.set(BRIGHTNESS_MAX);
   testSetting1.set(0);
   testSetting2.set(0);
   strandTestPattern.set(StrandTestPattern::DISABLED);
@@ -172,6 +175,12 @@ bool oldLightsEnabled;
 constexpr int VBAT_PIN = A6;
 constexpr int CHG_PIN = 3;
 constexpr int PGOOD_PIN = 4;
+
+constexpr int MUSEUM_DOOR_PIN = 0;
+constexpr int LIBRARY_DOOR_PIN = 1;
+
+Switch museumDoor(MUSEUM_DOOR_PIN, INPUT_PULLUP);
+Switch libraryDoor(LIBRARY_DOOR_PIN, INPUT_PULLUP);
 
 SnoozeDigital snoozeDigital;
 SnoozeUSBSerial snoozeUsbSerial;
@@ -290,16 +299,17 @@ void clampDayOfMonth(TimeElements* te, bool rollover) {
 std::unique_ptr<Menu> makeMuseumMenu() {
   auto menu = std::make_unique<Menu>();
   menu->addItem(std::make_unique<TitleItem>("MUSEUM"));
-  menu->addItem(std::make_unique<TintItem>("Light Tint", museumLightTint));
-  menu->addItem(std::make_unique<BrightnessItem>("Light Brightness", museumLightBrightness));
+  menu->addItem(std::make_unique<TintItem>("Tint", museumLightTint));
+  menu->addItem(std::make_unique<BrightnessItem>("Brightness", museumLightBrightness));
   return menu;
 }
 
 std::unique_ptr<Menu> makeLibraryMenu() {
   auto menu = std::make_unique<Menu>();
   menu->addItem(std::make_unique<TitleItem>("LIBRARY"));
-  menu->addItem(std::make_unique<TintItem>("Light Tint", libraryLightTint));
-  menu->addItem(std::make_unique<BrightnessItem>("Light Brightness", libraryLightBrightness));
+  menu->addItem(std::make_unique<TintItem>("Tint", libraryLightTint));
+  menu->addItem(std::make_unique<BrightnessItem>("Brightness - Open", libraryLightBrightnessWhenOpen));
+  menu->addItem(std::make_unique<BrightnessItem>("Brightness - Closed", libraryLightBrightnessWhenClosed));
   return menu;
 }
 
@@ -522,6 +532,9 @@ void BoardTest::poll(Context& context) {
     _time = t;
     context.requestDraw();
   }
+  if (museumDoor.switched() || libraryDoor.switched()) {
+    context.requestDraw();
+  }
 }
 
 bool BoardTest::input(Context& context, const InputEvent& event) {
@@ -538,7 +551,7 @@ bool BoardTest::input(Context& context, const InputEvent& event) {
       _message = "DOUBLE_CLICK";
       break;
     case InputType::ROTATE:
-      _message = "ROTATE: " + String(event.value);
+      _message = "ROTATE " + String(event.value);
       _values[_index] += uint8_t(event.value * 5);
       break;
     case InputType::BACK:
@@ -552,7 +565,6 @@ bool BoardTest::input(Context& context, const InputEvent& event) {
   }
 
   context.requestDraw();
-  Serial.println(_message);
   return false;
 }
 
@@ -561,7 +573,17 @@ void BoardTest::draw(Context& context, Canvas& canvas) {
   canvas.gfx().drawStr(1, 0, "BOARD TEST");
   canvas.gfx().setFont(DEFAULT_FONT);
 
-  canvas.gfx().drawStr(1, 20, _message.c_str());
+  canvas.gfx().setCursor(1, 10);
+  canvas.gfx().print("Input: ");
+  canvas.gfx().print(_message.c_str());
+
+  canvas.gfx().setCursor(1, 20);
+  canvas.gfx().print("Museum door: ");
+  canvas.gfx().print(museumDoor.on() ? "Closed" : "Open");
+
+  canvas.gfx().setCursor(1, 30);
+  canvas.gfx().print("Library door: ");
+  canvas.gfx().print(libraryDoor.on() ? "Closed" : "Open");
 
   canvas.gfx().setCursor(1, 40);
   canvas.gfx().print("Time: ");
@@ -618,8 +640,8 @@ std::unique_ptr<Menu> makeDiagnosticsMenu() {
   auto menu = std::make_unique<Menu>();
   menu->addItem(std::make_unique<TitleItem>("DIAGNOSTICS"));
   menu->addItem(std::make_unique<NavigateItem>("Board Test", makeBoardTestScene));
-  menu->addItem(std::make_unique<NavigateItem>("EEPROM Test", makeEepromTestMenu));
   menu->addItem(std::make_unique<NavigateItem>("Strand Test", makeStrandTestMenu));
+  menu->addItem(std::make_unique<NavigateItem>("EEPROM Test", makeEepromTestMenu));
   menu->addItem(std::make_unique<NavigateItem>("Factory Reset", makeFactoryResetMenu));
   return menu;
 }
@@ -645,7 +667,11 @@ LightState renderMuseumLights(float scale) {
 }
 
 LightState renderLibraryLights(float scale) {
-  RGBW color = makeStripColor(libraryLightTint.get(), libraryLightBrightness.get()) * scale;
+  brightness_t brightness = libraryDoor.on() ?
+      libraryLightBrightnessWhenClosed.get() :
+      libraryLightBrightnessWhenOpen.get();
+
+  RGBW color = makeStripColor(libraryLightTint.get(), brightness) * scale;
   for (size_t i = 0; i < LIGHTS_LIBRARY_COUNT; i++) {
     newLights[i + LIGHTS_LIBRARY_FIRST] = color;
   }
@@ -772,12 +798,18 @@ void setup() {
   printDateAndTime(Serial, now());
   Serial.println();
 
-  // Initialize the settings.
+  // Initialize the settings
   settings.begin(SETTINGS_SCHEMA_VERSION, resetSettings);
 
-  // Initialize the rest of the hardware.
+  // Initialize panel
   panel.begin(snoozeDigital);
   stage.begin(makeRootMenu());
+
+  // Initialize door sensors
+  snoozeDigital.pinMode(MUSEUM_DOOR_PIN, INPUT_PULLUP, CHANGE);
+  snoozeDigital.pinMode(LIBRARY_DOOR_PIN, INPUT_PULLUP, CHANGE);
+
+  // Initialized LED strip
   pinMode(LIGHTS_EN_PIN, OUTPUT);
   setLightsEnabled(false);
 
@@ -796,11 +828,19 @@ void setup() {
 }
 
 void loop() {
+  // Update statistics
   updateBatteryHistory();
+  
+  // Update sensors
+  museumDoor.poll();
+  libraryDoor.poll();
+
+  // Update user interface and LEDs
   panel.update();
   stage.update();
   LightState state = updateLights();
 
+  // Go to sleep if nothing else going on
   static uint32_t readyToSleepAt = 0;
   if (sleepOn.get() == OnOff::ON && state != LightState::ANIMATING
       && panel.canSleep() && stage.canSleep()) {
