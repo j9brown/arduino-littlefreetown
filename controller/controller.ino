@@ -28,6 +28,7 @@
 #include <Print.h>
 #include <TimeLib.h>
 
+#include "battery.h"
 #include "panel.h"
 #include "settings.h"
 #include "ui.h"
@@ -107,30 +108,26 @@ LightState mergeLightState(LightState a, LightState b) {
 }
 
 namespace {
-using vbat_t = uint8_t;
-constexpr time_t BATTERY_HISTORY_INTERVAL = 60 * 15; // sample every 15 minutes
-constexpr unsigned BATTERY_HISTORY_LENGTH = 256;
-
 const uint32_t SETTINGS_SCHEMA_VERSION = 2;
-Setting<uint8_t, 0> activityTimeoutSeconds;
-Setting<uint8_t, 1> dawnHour;
-Setting<uint8_t, 2> duskHour;
-Setting<uint8_t, 3> nightHour;
-Setting<brightness_t, 4> daytimeBrightness;
-Setting<brightness_t, 5> eveningBrightness;
-Setting<brightness_t, 6> nighttimeBrightness;
-Setting<OnOff, 7> lightsOn;
-Setting<LowBattery, 8> lowBatteryCutoff;
-Setting<OnOff, 9> sleepOn;
-Setting<tint_t, 100> museumLightTint;
-Setting<brightness_t, 101> museumLightBrightness;
-Setting<tint_t, 200> libraryLightTint;
-Setting<brightness_t, 201> libraryLightBrightnessWhenOpen;
-Setting<brightness_t, 202> libraryLightBrightnessWhenClosed;
-SettingArray<vbat_t, 1000, BATTERY_HISTORY_LENGTH> batteryHistory;
-Setting<uint8_t, 2000> testSetting1;
-Setting<int8_t, 2001> testSetting2;
-Setting<StrandTestPattern, 2002> strandTestPattern;
+Setting<uint8_t> activityTimeoutSeconds(0);
+Setting<uint8_t> dawnHour(1);
+Setting<uint8_t> duskHour(2);
+Setting<uint8_t> nightHour(3);
+Setting<brightness_t> daytimeBrightness(4);
+Setting<brightness_t> eveningBrightness(5);
+Setting<brightness_t> nighttimeBrightness(6);
+Setting<OnOff> lightsOn(7);
+Setting<LowBattery> lowBatteryCutoff(8);
+Setting<OnOff> sleepOn(9);
+Setting<tint_t> museumLightTint(100);
+Setting<brightness_t> museumLightBrightness(101);
+Setting<tint_t> libraryLightTint(200);
+Setting<brightness_t> libraryLightBrightnessWhenOpen(201);
+Setting<brightness_t> libraryLightBrightnessWhenClosed(202);
+BatteryHistory::Storage batteryHistoryStorage(1000);
+Setting<uint8_t> testSetting1(2000);
+Setting<int8_t> testSetting2(2001);
+Setting<StrandTestPattern> strandTestPattern(2002);
 
 void resetSettings() {
   activityTimeoutSeconds.set(30);
@@ -160,6 +157,28 @@ Binding binding(&panel);
 Stage stage(&binding,
   [] { return activityTimeoutSeconds.get() * 1000UL; });
 
+constexpr int VBAT_PIN = A6;
+constexpr int CHG_PIN = 3;
+constexpr int PGOOD_PIN = 4;
+
+Battery battery(VBAT_PIN);
+BatteryHistory batteryHistory(&battery, batteryHistoryStorage);
+LowBatteryDetector lowBatteryDetector(&battery, []() -> millivolt_t {
+  switch (lowBatteryCutoff.get()) {
+    default:
+    case LowBattery::DISABLED:
+      return 0;
+    case LowBattery::V3_3:
+      return 3300;
+    case LowBattery::V3_4:
+      return 3400;
+    case LowBattery::V3_5:
+      return 3500;
+    case LowBattery::V3_6:
+      return 3600;
+  }
+});
+
 constexpr int LIGHTS_EN_PIN = 2;
 constexpr int LIGHTS_PIN = 21;
 constexpr unsigned LIGHTS_MUSEUM_FIRST = 0;
@@ -171,10 +190,6 @@ Adafruit_NeoPixel lights(LIGHTS_TOTAL_COUNT, LIGHTS_PIN, NEO_GRBW | NEO_KHZ800);
 RGBW oldLights[LIGHTS_TOTAL_COUNT];
 RGBW newLights[LIGHTS_TOTAL_COUNT];
 bool oldLightsEnabled;
-
-constexpr int VBAT_PIN = A6;
-constexpr int CHG_PIN = 3;
-constexpr int PGOOD_PIN = 4;
 
 constexpr int MUSEUM_DOOR_PIN = 0;
 constexpr int LIBRARY_DOOR_PIN = 1;
@@ -222,61 +237,6 @@ brightness_t brightnessForTimeOfDay() {
   return 1.0f;
 }
 
-// Battery voltage measured in increments of 10 mV minus 3 V
-// range 3.00 V to 5.55 V, assumes 12 bit analog read resolution
-uint32_t batterySampleTime = 0;
-vbat_t batterySample;
-
-vbat_t readBattery() {
-  uint32_t t = millis() >> 7; // don't sample any faster than about 7 Hz to avoid draining the capacitor
-  if (t != batterySampleTime) {
-    constexpr uint32_t vref = 331; // 3.31 V
-    batterySampleTime = t;
-    uint32_t voltage = analogRead(VBAT_PIN) * vref / 2047;
-    batterySample = vbat_t(std::min(std::max(voltage, 300UL), 555UL) - 300UL);
-  }
-  return batterySample;
-}
-
-uint32_t batteryPeriod() {
-   return (now() / BATTERY_HISTORY_INTERVAL) % BATTERY_HISTORY_LENGTH;
-}
-
-float batteryVoltage(vbat_t value) {
-  return (value + 300) * 0.01f;
-}
-
-bool isLowBattery(LowBattery cutoff, vbat_t hysteresis) {
-  switch (cutoff) {
-    default:
-    case LowBattery::DISABLED:
-      return false;
-    case LowBattery::V3_3:
-      return readBattery() < 30 + hysteresis;
-    case LowBattery::V3_4:
-      return readBattery() < 40 + hysteresis;
-    case LowBattery::V3_5:
-      return readBattery() < 50 + hysteresis;
-    case LowBattery::V3_6:
-      return readBattery() < 60 + hysteresis;
-  }
-}
-
-LowBattery currentLowBatteryCutoff;
-bool currentLowBatteryState;
-
-bool isLowBatteryWithHysteresis() {
-  LowBattery setting = lowBatteryCutoff.get();
-  if (currentLowBatteryCutoff != setting) {
-    currentLowBatteryCutoff = setting;
-    currentLowBatteryState = false;
-  }
-
-  currentLowBatteryState = isLowBattery(currentLowBatteryCutoff,
-      currentLowBatteryState ? 5 : 0); // add hysteresis
-  return currentLowBatteryState;
-}
-
 } // namespace
 
 template <typename Fn>
@@ -316,25 +276,25 @@ std::unique_ptr<Menu> makeLibraryMenu() {
 std::unique_ptr<Menu> makeTimeMenu() {
   auto menu = std::make_unique<Menu>();
   menu->addItem(std::make_unique<TitleItem>("TIME"));
-  menu->addItem(std::make_unique<NumericItem<int>>("Year",
+  menu->addItem(std::make_unique<NumericItem<int>>("Year", Editable<int>(
     [] { return year(); },
     [] (int x) {
       editTime([x] (TimeElements* te) {
         te->Year = CalendarYrToTm(x);
         clampDayOfMonth(te, false);
       });
-    },
+    }),
     2021, 2037, 1));
-  menu->addItem(std::make_unique<NumericItem<int>>("Month",
+  menu->addItem(std::make_unique<NumericItem<int>>("Month", Editable<int>(
     [] { return month(); },
     [] (int x) {
       editTime([x] (TimeElements* te) {
         te->Month = x;
         clampDayOfMonth(te, false);
       });
-    },
+    }),
     1, 12, 1));
-  menu->addItem(std::make_unique<NumericItem<int>>("Day",
+  menu->addItem(std::make_unique<NumericItem<int>>("Day", Editable<int>(
     [] { return day(); },
     [] (int x) {
       editTime([x] (TimeElements* te) {
@@ -342,25 +302,25 @@ std::unique_ptr<Menu> makeTimeMenu() {
         te->Day = x;
         clampDayOfMonth(te, rollover);
       });
-    },
+    }),
     1, 31, 1));
-  menu->addItem(std::make_unique<NumericItem<int>>("Hour",
+  menu->addItem(std::make_unique<NumericItem<int>>("Hour", Editable<int>(
     [] { return hour(); },
     [] (int x) {
       editTime([x] (TimeElements* te) { te->Hour = x; });
-    },
+    }),
     0, 23, 1));
-  menu->addItem(std::make_unique<NumericItem<int>>("Minute",
+  menu->addItem(std::make_unique<NumericItem<int>>("Minute", Editable<int>(
     [] { return minute(); },
     [] (int x) {
       editTime([x] (TimeElements* te) { te->Minute = x; });
-    },
+    }),
     0, 59, 1));
-  menu->addItem(std::make_unique<NumericItem<int>>("Second",
+  menu->addItem(std::make_unique<NumericItem<int>>("Second", Editable<int>(
     [] { return second(); },
     [] (int x) {
       editTime([x] (TimeElements* te) { te->Second = x; });
-    },
+    }),
     0, 59, 1));
   return menu;
 }
@@ -405,10 +365,10 @@ private:
   static constexpr uint32_t CHART_X = DISPLAY_WIDTH - CHART_WIDTH - 1;
   static constexpr uint32_t CHART_Y = DISPLAY_HEIGHT - CHART_HEIGHT - 11;
   static constexpr uint32_t SCROLL_MIN = 0;
-  static constexpr uint32_t SCROLL_MAX = BATTERY_HISTORY_LENGTH - CHART_WIDTH;
+  static constexpr uint32_t SCROLL_MAX = BatteryHistory::LENGTH - CHART_WIDTH;
   static constexpr float VOLTAGE_MIN = 3.2f;
   static constexpr float VOLTAGE_MAX = 4.2f;
-  static constexpr uint32_t DIVISION_MINOR = (60 * 60) / BATTERY_HISTORY_INTERVAL; // every hour
+  static constexpr uint32_t DIVISION_MINOR = (60 * 60) / BatteryHistory::INTERVAL; // every hour
   static constexpr uint32_t DIVISION_MAJOR = DIVISION_MINOR * 12;
 
   enum class State {
@@ -416,7 +376,7 @@ private:
   };
 
   time_t _time = 0;
-  vbat_t _level = 0;
+  millivolt_t _voltage = 0;
   uint32_t _scroll = SCROLL_MAX;
   State _state = State::DISCHARGING;
 };
@@ -425,7 +385,7 @@ void BatteryMonitor::poll(Context& context) {
   time_t t = now();
   if (t != _time) {
     _time = t;
-    _level = readBattery();
+    _voltage = battery.read();
     context.requestDraw();
   }
 
@@ -445,7 +405,7 @@ void BatteryMonitor::draw(Context& context, Canvas& canvas) {
   canvas.gfx().setCursor(1, 0);
   canvas.gfx().setFont(TITLE_FONT);
   canvas.gfx().print("BATTERY: ");
-  canvas.gfx().print(batteryVoltage(_level), 2);
+  canvas.gfx().print(_voltage * 0.001f, 2);
   canvas.gfx().print(" V ");
 
   canvas.gfx().setFont(u8g2_font_open_iconic_embedded_1x_t);
@@ -459,7 +419,7 @@ void BatteryMonitor::draw(Context& context, Canvas& canvas) {
     default:
       break;
   }
-  canvas.gfx().drawStr(118, 1, _level < 50 ? "@" : "I");
+  canvas.gfx().drawStr(118, 1, _voltage < 3500 ? "@" : "I");
 
   // Draw the Y axis and labels
   canvas.gfx().setFont(u8g2_font_4x6_tr);
@@ -473,16 +433,16 @@ void BatteryMonitor::draw(Context& context, Canvas& canvas) {
   canvas.gfx().drawLine(CHART_X - 4, CHART_Y + CHART_HEIGHT - 1, CHART_X - 2, CHART_Y + CHART_HEIGHT - 1);
 
   // Draw the chart and X axis labels
-  uint32_t currentPeriod = batteryPeriod();
+  uint32_t currentPeriod = batteryHistory.currentPeriod();
   for (uint32_t pos = 0; pos < CHART_WIDTH; pos++) {
     uint32_t index = pos + _scroll;
-    uint32_t period = (index + currentPeriod + 1) % BATTERY_HISTORY_LENGTH;
-    float voltage = std::min(std::max(batteryVoltage(batteryHistory.getAt(period)), VOLTAGE_MIN), VOLTAGE_MAX);
+    uint32_t period = (index + currentPeriod + 1) % BatteryHistory::LENGTH;
+    float voltage = std::min(std::max(batteryHistory.getAt(period) * 0.001f, VOLTAGE_MIN), VOLTAGE_MAX);
     uint32_t elev = (voltage - VOLTAGE_MIN) * CHART_HEIGHT / (VOLTAGE_MAX - VOLTAGE_MIN);
     uint32_t x = pos + CHART_X;
     canvas.gfx().drawBox(x, CHART_Y + CHART_HEIGHT - 1 - elev, 1, elev + 1);
 
-    uint32_t age = BATTERY_HISTORY_LENGTH - index - 1;
+    uint32_t age = BatteryHistory::LENGTH - index - 1;
     if ((age % DIVISION_MAJOR) == 0) {
       canvas.gfx().drawLine(x, CHART_Y + CHART_HEIGHT, x, CHART_Y + CHART_HEIGHT + 3);
       String text;
@@ -708,7 +668,8 @@ LightState renderStrandTest() {
 }
 
 LightState renderLights() {
-  if (isLowBatteryWithHysteresis()) return LightState::OFF;
+  if (lowBatteryDetector.isLowBattery())
+    return LightState::OFF;
 
   for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
     newLights[i] = RGBW{};
@@ -766,22 +727,6 @@ LightState updateLights() {
   return state;
 }
 
-void updateBatteryHistory() {
-  static uint32_t lastPeriod = 0;
-  uint32_t period = batteryPeriod();
-  if (period != lastPeriod) {
-    vbat_t level = readBattery();
-    lastPeriod = period;
-    batteryHistory.setAt(period, level);
-
-    Serial.print("Battery: ");
-    Serial.print(batteryVoltage(level), 2);
-    Serial.print(" V at ");
-    printDateAndTime(Serial, now());
-    Serial.println();
-  }
-}
-
 void setup() {
   // Configure the time library to use the hardware RTC
   setSyncProvider([]() -> time_t { return Teensy3Clock.get(); } );
@@ -800,6 +745,8 @@ void setup() {
 
   // Initialize the settings
   settings.begin(SETTINGS_SCHEMA_VERSION, resetSettings);
+  battery.begin();
+  batteryHistory.begin();
 
   // Initialize panel
   panel.begin(snoozeDigital);
@@ -816,7 +763,6 @@ void setup() {
   // Initialize battery monitor
   pinMode(CHG_PIN, INPUT);
   pinMode(PGOOD_PIN, INPUT);
-  analogReadResolution(12);
 
   // Setup sleeping
   // Periodically wake to update battery stats
@@ -829,7 +775,7 @@ void setup() {
 
 void loop() {
   // Update statistics
-  updateBatteryHistory();
+  batteryHistory.update();
   
   // Update sensors
   museumDoor.poll();

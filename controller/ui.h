@@ -24,10 +24,7 @@ constexpr uint32_t LAYOUT_VALUE_LEFT = 90;
 constexpr uint32_t LAYOUT_VALUE_MARGIN = 3;
 
 constexpr const uint8_t *DEFAULT_FONT = u8g2_font_miranda_nbp_tr;
-//constexpr const uint8_t *DEFAULT_FONT = u8g2_font_prospero_nbp_tr;
 constexpr const uint8_t *TITLE_FONT = u8g2_font_prospero_bold_nbp_tr;
-//constexpr const uint8_t *DEFAULT_FONT = u8g2_font_6x13_tr;
-//constexpr const uint8_t *TITLE_FONT = u8g2_font_6x13B_tr;
 } // namespace
 
 enum class InputType {
@@ -49,7 +46,7 @@ struct InputEvent {
 // Could be abstracted further if needed.
 class Binding {
 public:
-  Binding(Panel* panel) : _panel(panel) {}
+  explicit Binding(Panel* panel) : _panel(panel) {}
   ~Binding() = default;
 
   // Reads the next input event.
@@ -117,7 +114,7 @@ private:
 // The canvas is cleared and LED colors are set to defaults prior to each draw call.
 class Canvas {
 public:
-  Canvas(Binding* binding) : _binding(binding) {}
+  explicit Canvas(Binding* binding) : _binding(binding) {}
   ~Canvas() = default;
 
   inline U8G2& gfx() { return _binding->gfx(); }
@@ -238,7 +235,7 @@ private:
 
 class Item {
 public:
-  Item(String label);
+  explicit Item(String label);
   virtual ~Item() = default;
 
   // Called periodically to check for changes and make requests on the context.
@@ -270,7 +267,7 @@ public:
 
 class BackItem : public Item {
 public:
-  BackItem(String label);
+  explicit BackItem(String label);
   ~BackItem() override = default;
 
   bool click(Context& context) override;
@@ -292,7 +289,7 @@ private:
 template <typename T>
 class ValueItem : public Item {
 public:
-  ValueItem(String label);
+  explicit ValueItem(String label);
   ~ValueItem() override = default;
 
   void poll(Context& context) override;
@@ -348,16 +345,42 @@ void ValueItem<T>::edit(Context& context, int32_t delta) {
 }
 
 template <typename T>
-class NumericItem : public ValueItem<T> {
+class Editable {
 public:
   using GetCallback = T (*)();
   using SetCallback = void (*)(T);
+  using Storage = Setting<T>;
 
-  NumericItem(String label, GetCallback getCallback, SetCallback setCallback,
-      T min, T max, T step);
+  Editable(GetCallback getCallback, SetCallback setCallback) :
+      _getCallback(std::move(getCallback)), _setCallback(std::move(setCallback)) {}
 
-  template <unsigned addr>
-  NumericItem(String label, Setting<T, addr>, T min, T max, T step);
+  Editable(Storage storage) :
+      _getCallback(nullptr), _storage(std::move(storage)) {}
+
+  T get() const {
+    return _getCallback ? _getCallback() : _storage.get();    
+  }
+
+  void set(T value) const {
+    if (_getCallback) {
+      _setCallback(std::move(value));
+    } else {
+      _storage.set(std::move(value));
+    }
+  }
+
+private:
+  GetCallback _getCallback;
+  union {
+    SetCallback _setCallback;
+    Storage _storage;
+  };
+};
+
+template <typename T>
+class NumericItem : public ValueItem<T> {
+public:
+  NumericItem(String label, Editable<T> editable, T min, T max, T step);
       
   ~NumericItem() override = default;
 
@@ -368,36 +391,28 @@ protected:
   void printValue(Print& printer, T value) override;
 
 private:
-  const GetCallback _getCallback;
-  const SetCallback _setCallback;
+  const Editable<T> _editable;
   const T _min, _max, _step;
   T _polledValue;
 };
 
 template <typename T>
-NumericItem<T>::NumericItem(String label, GetCallback getCallback, SetCallback setCallback,
+NumericItem<T>::NumericItem(String label, Editable<T> editable,
     T min, T max, T step) :
     ValueItem<T>(std::move(label)),
-    _getCallback(std::move(getCallback)),
-    _setCallback(std::move(setCallback)),
+    _editable(std::move(editable)),
     _min(std::move(min)),
     _max(std::move(max)),
     _step(std::move(step)) {}
 
 template <typename T>
-template <unsigned addr>
-NumericItem<T>::NumericItem(String label, Setting<T, addr>, T min, T max, T step) :
-    NumericItem(std::move(label), Setting<T, addr>::get, Setting<T, addr>::set,
-        std::move(min), std::move(max), std::move(step)) {}
-
-template <typename T>
 T NumericItem<T>::getValue() {
-  return _getCallback();
+  return _editable.get();
 }
 
 template <typename T>
 void NumericItem<T>::setValue(T value) {
-  _setCallback(value);
+  _editable.set(value);
 }
 
 template <typename T>
@@ -412,10 +427,7 @@ void NumericItem<T>::printValue(Print& printer, T value) {
 
 class TintItem : public NumericItem<tint_t> {
 public:
-  TintItem(String label, GetCallback getCallback, SetCallback setCallback);
-
-  template <unsigned addr>
-  TintItem(String label, Setting<tint_t, addr>);
+  TintItem(String label, Editable<tint_t> editable);
   
   ~TintItem() override = default;
 
@@ -426,16 +438,9 @@ protected:
   void printValue(Print& printer, tint_t value) override;
 };
 
-template <unsigned addr>
-TintItem::TintItem(String label, Setting<tint_t, addr>) :
-    TintItem(label, Setting<tint_t, addr>::get, Setting<tint_t, addr>::set) {}
-
 class BrightnessItem : public NumericItem<brightness_t> {
 public:
-  BrightnessItem(String label, GetCallback getCallback, SetCallback setCallback);
-
-  template <unsigned addr>
-  BrightnessItem(String label, Setting<brightness_t, addr>);
+  BrightnessItem(String label, Editable<brightness_t> editable);
 
   ~BrightnessItem() override = default;
 
@@ -445,10 +450,6 @@ public:
 protected:
   void printValue(Print& printer, brightness_t value) override;
 };
-
-template <unsigned addr>
-BrightnessItem::BrightnessItem(String label, Setting<brightness_t, addr>) :
-    BrightnessItem(label, Setting<brightness_t, addr>::get, Setting<brightness_t, addr>::set) {}
 
 // Traits for ChoiceItem value types.
 // Must have the following members:
@@ -464,13 +465,8 @@ template <typename T>
 class ChoiceItem : public ValueItem<T> {
 public:
   using Traits = ChoiceTraits<T>;
-  using GetCallback = T (*)();
-  using SetCallback = void (*)(T);
 
-  ChoiceItem(String label, GetCallback getCallback, SetCallback setCallback);
-
-  template <unsigned addr>
-  ChoiceItem(String label, Setting<T, addr>);
+  ChoiceItem(String label, Editable<T> editable);
   
   ~ChoiceItem() override = default;
 
@@ -481,30 +477,23 @@ protected:
   void printValue(Print& printer, T value) override;
 
 private:
-  const GetCallback _getCallback;
-  const SetCallback _setCallback;
+  const Editable<T> _editable;
   T _polledValue;
 };
 
 template <typename T>
-ChoiceItem<T>::ChoiceItem(String label, GetCallback getCallback, SetCallback setCallback) :
+ChoiceItem<T>::ChoiceItem(String label, Editable<T> editable) :
     ValueItem<T>(std::move(label)),
-    _getCallback(std::move(getCallback)),
-    _setCallback(std::move(setCallback)) {}
-
-template <typename T>
-template <unsigned addr>
-ChoiceItem<T>::ChoiceItem(String label, Setting<T, addr>) :
-    ChoiceItem(std::move(label), Setting<T, addr>::get, Setting<T, addr>::set) {}
+    _editable(std::move(editable)) {}
 
 template <typename T>
 T ChoiceItem<T>::getValue() {
-  return _getCallback();
+  return _editable.get();
 }
 
 template <typename T>
 void ChoiceItem<T>::setValue(T value) {
-  _setCallback(value);
+  _editable.set(value);
 }
 
 template <typename T>

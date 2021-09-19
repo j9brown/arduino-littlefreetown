@@ -7,6 +7,8 @@
 #include <Arduino.h>
 #include <EEPROM.h>
 
+using eeprom_addr_t = uint16_t;
+
 // Initializes the EEPROM for settings.
 // Erases all settings if the schema has changed.
 class Settings {
@@ -19,7 +21,7 @@ public:
   static void begin(uint8_t schemaVersion, InitCallback init) {
     const uint32_t expected = 0xAB5C155A ^ schemaVersion;
     if (read<uint32_t>(EEPROM.length() - 4) != expected) {
-      clear();
+      clear(0, EEPROM.length());
       init();
       write<uint32_t>(EEPROM.length() - 4, expected);
     }
@@ -31,7 +33,7 @@ public:
   }
 
   template <typename T>
-  static T read(unsigned addr) {
+  static T read(eeprom_addr_t addr) {
     T value;
     uint8_t* bytes = reinterpret_cast<uint8_t*>(&value);
     for (size_t i = 0; i < sizeof(T); i++)
@@ -40,10 +42,16 @@ public:
   }
 
   template <typename T>
-  static void write(unsigned addr, T value) {
+  static void write(eeprom_addr_t addr, T value) {
     const uint8_t* bytes = reinterpret_cast<uint8_t*>(&value);
     for (size_t i = 0; i < sizeof(T); i++)
       EEPROM[addr + i].update(bytes[i]);
+  }
+
+  static void clear(eeprom_addr_t addr, size_t length) {
+    for (size_t i = 0; i < length; i++) {
+      EEPROM[addr + i].update(0);
+    }
   }
 
 private:
@@ -51,38 +59,46 @@ private:
   Settings(Settings&&) = delete;  
   Settings& operator=(const Settings&) = delete;
   Settings& operator=(Settings&&) = delete;
-
-  static void clear() {
-    for (size_t i = 0; i < size_t(EEPROM.length()); i++) {
-      EEPROM[i].update(0);
-    }
-  }
 };
 
 // Accessor for a setting stored in EEPROM.
 // Settings must not overlap in memory.
-template<typename T, unsigned addr>
+template<typename T>
 class Setting {
 public:
-  static T get() {
-    return Settings::read<T>(addr);
+  explicit Setting(eeprom_addr_t addr) : _addr(addr) {}
+
+  T get() const {
+    return Settings::read<T>(_addr);
   }
 
-  static void set(T value) {
-    return Settings::write<T>(addr, std::move(value));
+  void set(T value) const {
+    return Settings::write<T>(_addr, std::move(value));
   }
+
+private:
+  const eeprom_addr_t _addr;
 };
 
 // Accessor for an array of settings stored in EEPROM.
 // Settings must not overlap in memory.
-template<typename T, unsigned addr, unsigned count>
+template<typename T, size_t count>
 class SettingArray {
 public:
-  static T getAt(size_t i) {
-    return Settings::read<T>(addr + sizeof(T) * i);
+  explicit SettingArray(eeprom_addr_t addr) : _addr(addr) {}
+
+  T getAt(size_t i) const {
+    return Settings::read<T>(_addr + sizeof(T) * i);
   }
 
-  static void setAt(size_t i, T value) {
-    return Settings::write<T>(addr + sizeof(T) * i, std::move(value));
+  void setAt(size_t i, T value) const {
+    return Settings::write<T>(_addr + sizeof(T) * i, std::move(value));
   }
+
+  void clear() const {
+    Settings::clear(_addr, sizeof(T) * count);
+  }
+
+private:
+  const eeprom_addr_t _addr;
 };

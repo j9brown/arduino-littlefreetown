@@ -301,9 +301,8 @@ bool NavigateItem::click(Context& context) {
   return false;
 }
 
-TintItem::TintItem(String label, GetCallback getCallback, SetCallback setCallback) :
-    NumericItem(std::move(label), std::move(getCallback), std::move(setCallback),
-    TINT_MIN, TINT_MAX, 1) {}
+TintItem::TintItem(String label, Editable<tint_t> editable) :
+    NumericItem(std::move(label), std::move(editable), TINT_MIN, TINT_MAX, 1) {}
 
 void TintItem::draw(Context& context, Canvas& canvas, bool active, bool editing,
     uint32_t y, uint32_t width, uint32_t height) {
@@ -317,9 +316,8 @@ void TintItem::printValue(Print& printer, tint_t value) {
   printTint(printer, value);
 }
 
-BrightnessItem::BrightnessItem(String label, GetCallback getCallback, SetCallback setCallback) :
-    NumericItem(std::move(label), std::move(getCallback), std::move(setCallback),
-    BRIGHTNESS_MIN, BRIGHTNESS_MAX, 1) {}
+BrightnessItem::BrightnessItem(String label, Editable<brightness_t> editable) :
+    NumericItem(std::move(label), std::move(editable), BRIGHTNESS_MIN, BRIGHTNESS_MAX, 1) {}
 
 void BrightnessItem::draw(Context& context, Canvas& canvas, bool active, bool editing,
     uint32_t y, uint32_t width, uint32_t height) {
