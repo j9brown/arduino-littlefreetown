@@ -89,8 +89,8 @@ public:
 
   inline millis_t frameTime() const { return _frameTime; }
 
-  bool isRequestPending() const {
-    return _requestedPop || _requestedHome || _requestedDraw || _requestedSleep || _requestedWake;
+  bool canSleep() const {
+    return !_requestedPop && !_requestedHome && !_requestedWake;
   }
 
 private:
@@ -152,6 +152,8 @@ public:
   ~Stage() = default;
 
   void begin(std::unique_ptr<Scene> scene);
+
+  // Updates the UI
   void update();
 
   bool canSleep() const;
@@ -163,6 +165,9 @@ private:
 
   inline State& topState() { return _stateStack[_stateIndex]; }
   inline Scene& topScene() { return *topState().scene; }
+
+  // Returns true if it did some work, false if there was nothing to do.
+  bool updateOnce();
 
   void pushState(std::unique_ptr<Scene> scene);
   void popState();
@@ -182,6 +187,7 @@ private:
   bool _asleep = false;
   millis_t _lastActivityTime = 0;
   millis_t _lastPollTime = 0;
+  millis_t _lastDrawTime = 0;
   bool _needPoll = false;
 };
 
@@ -261,6 +267,7 @@ public:
   TitleItem(String label);
   ~TitleItem() override = default;
 
+  bool click(Context& context) override;
   void draw(Context& context, Canvas& canvas, bool active, bool editing,
       uint32_t y, uint32_t width, uint32_t height) override;
 };
@@ -436,6 +443,23 @@ public:
 
 protected:
   void printValue(Print& printer, tint_t value) override;
+};
+
+class ToneItem : public NumericItem<tone_t> {
+public:
+  ToneItem(String label, Editable<tint_t> tint, Editable<tone_t> tone);
+  
+  ~ToneItem() override = default;
+
+  bool click(Context& context) override;
+  void draw(Context& context, Canvas& canvas, bool active, bool editing,
+      uint32_t y, uint32_t width, uint32_t height) override;
+
+protected:
+  void printValue(Print& printer, tone_t value) override;
+
+private:
+  Editable<tint_t> _tint;
 };
 
 class BrightnessItem : public NumericItem<brightness_t> {

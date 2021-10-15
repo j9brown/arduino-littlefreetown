@@ -9,6 +9,7 @@ constexpr RGB DEFAULT_DISPLAY_COLOR = RGB{188,0,166};
 constexpr RGB DEFAULT_KNOB_COLOR = RGB{40,40,40};
 
 constexpr millis_t POLL_INTERVAL = 20;
+constexpr millis_t DRAW_INTERVAL = 20;
 } // namespace
 
 InputEvent Binding::readInputEvent() {
@@ -49,6 +50,10 @@ void Stage::begin(std::unique_ptr<Scene> scene) {
 }
 
 void Stage::update() {
+  while (updateOnce());
+}
+
+bool Stage::updateOnce() {
   // Handle pop and home
   if (_stateIndex > 0 && (_context._requestedPop || _context._requestedHome)) {
     topScene().exit(_context);
@@ -57,7 +62,7 @@ void Stage::update() {
     _context._requestedPush = nullptr; // don't honor push from exited scene
     _context.requestDraw();
     _needPoll = true;
-    return;
+    return true;
   } else {
     _context._requestedHome = false;
     if (_stateIndex == 0 && _context._requestedPop) {
@@ -73,7 +78,7 @@ void Stage::update() {
     _context.requestDraw();
     topScene().enter(_context);
     _needPoll = true;
-    return;
+    return true;
   }
 
   // Handle one input event
@@ -81,7 +86,7 @@ void Stage::update() {
   if (event.type != InputType::NONE) {
     if (_asleep) { // eat input events used to wake
       _context.requestWake();
-      return;
+      return true;
     }
 
     activity();
@@ -97,7 +102,7 @@ void Stage::update() {
           break;
       }
     }
-    return;
+    return true;
   }
 
   // Handle sleeping
@@ -108,7 +113,7 @@ void Stage::update() {
       _asleep = true;
       _binding->gfx().setPowerSave(true);
       _binding->setColors(RGB{}, RGB{});
-      return;
+      return true;
     }
   }
 
@@ -121,43 +126,46 @@ void Stage::update() {
       _binding->gfx().setPowerSave(false);
       _context.requestDraw();
       activity();
-      return;
+      return true;
     }
   }
-  
+
   // Handle polling for changes (may wake)
   _context._frameTime = millis();
   if (_needPoll || _context._frameTime - _lastPollTime >= POLL_INTERVAL) {
     _needPoll = false;
     _lastPollTime = _context._frameTime;
     topScene().poll(_context);
-    return;
+    return true;
   }
 
   // Stop here if asleep.
   if (_asleep) {
-    return;
+    return false; // nothing left to do while sleeping
   }
 
   // Handle activity timeouts
   millis_t timeout = _getActivityTimeoutCallback();
   if (timeout > 0 && _context._frameTime - _lastActivityTime >= timeout) {
     _context.requestSleep();
-    return;
+    return true;
   }
 
   // Handle drawing
-  if (_context._requestedDraw) {
+  if (_context._requestedDraw && _context._frameTime - _lastDrawTime >= DRAW_INTERVAL) {
     _context._requestedDraw = false;
     beginDraw();
     topScene().draw(_context, _canvas);
     endDraw();
-    return;
+    return true;
   }
+
+  // All done
+  return false;
 }
 
 bool Stage::canSleep() const {
-  return _asleep && !_context.isRequestPending();
+  return _asleep && _context.canSleep();
 }
 
 void Stage::beginDraw() {
@@ -277,10 +285,17 @@ void Item::draw(Context& context, Canvas& canvas, bool active, bool editing,
 TitleItem::TitleItem(String label) :
     Item(std::move(label)) {}
 
+bool TitleItem::click(Context& context) {
+  context.requestPop();
+  return false;
+}
+
 void TitleItem::draw(Context& context, Canvas& canvas, bool active, bool editing,
     uint32_t y, uint32_t width, uint32_t height) {
   canvas.gfx().setFont(TITLE_FONT);
   Item::draw(context, canvas, active, editing, y, width, height);
+  canvas.gfx().setFont(u8g2_font_open_iconic_gui_1x_t);
+  canvas.gfx().drawStr(118, y + 1, "A");
   canvas.gfx().setFont(DEFAULT_FONT);
 }
 
@@ -308,12 +323,33 @@ void TintItem::draw(Context& context, Canvas& canvas, bool active, bool editing,
     uint32_t y, uint32_t width, uint32_t height) {
   NumericItem::draw(context, canvas, active, editing, y, width, height);
   if (active) {
-    canvas.setKnobColor(makeKnobColor(getValue(), 6));
+    canvas.setKnobColor(makeKnobColor(getValue(), TONE_MAX, 6));
   }
 }
 
 void TintItem::printValue(Print& printer, tint_t value) {
   printTint(printer, value);
+}
+
+ToneItem::ToneItem(String label, Editable<tint_t> tint, Editable<tone_t> tone) :
+    NumericItem(std::move(label), std::move(tone), TONE_MIN, TONE_MAX, 1),
+    _tint(std::move(tint)) {}
+
+bool ToneItem::click(Context& context) {
+  return tintHasTone(_tint.get()) && NumericItem::click(context);
+}
+
+void ToneItem::draw(Context& context, Canvas& canvas, bool active, bool editing,
+    uint32_t y, uint32_t width, uint32_t height) {
+  NumericItem::draw(context, canvas, active, editing, y, width, height);
+  tint_t tint = _tint.get();
+  if (active && tintHasTone(tint)) {
+    canvas.setKnobColor(makeKnobColor(tint, getValue(), 6));
+  }
+}
+
+void ToneItem::printValue(Print& printer, tone_t value) {
+  printTone(printer, _tint.get(), value);
 }
 
 BrightnessItem::BrightnessItem(String label, Editable<brightness_t> editable) :
@@ -323,7 +359,7 @@ void BrightnessItem::draw(Context& context, Canvas& canvas, bool active, bool ed
     uint32_t y, uint32_t width, uint32_t height) {
   NumericItem::draw(context, canvas, active, editing, y, width, height);
   if (active) {
-    canvas.setKnobColor(makeKnobColor(TINT_WHITE, getValue()));
+    canvas.setKnobColor(makeKnobColor(TINT_WHITE, TONE_DEFAULT, getValue()));
   }
 }
 

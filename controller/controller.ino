@@ -113,17 +113,20 @@ Setting<uint8_t> activityTimeoutSeconds(0);
 Setting<uint8_t> dawnHour(1);
 Setting<uint8_t> duskHour(2);
 Setting<uint8_t> nightHour(3);
-Setting<brightness_t> daytimeBrightness(4);
-Setting<brightness_t> eveningBrightness(5);
-Setting<brightness_t> nighttimeBrightness(6);
 Setting<OnOff> lightsOn(7);
 Setting<LowBattery> lowBatteryCutoff(8);
 Setting<OnOff> sleepOn(9);
 Setting<tint_t> museumLightTint(100);
-Setting<brightness_t> museumLightBrightness(101);
+Setting<tone_t> museumLightTone(101);
+Setting<brightness_t> museumLightBrightnessDaytime(102);
+Setting<brightness_t> museumLightBrightnessEvening(103);
+Setting<brightness_t> museumLightBrightnessNighttime(104);
 Setting<tint_t> libraryLightTint(200);
-Setting<brightness_t> libraryLightBrightnessWhenOpen(201);
-Setting<brightness_t> libraryLightBrightnessWhenClosed(202);
+Setting<tone_t> libraryLightTone(201);
+Setting<brightness_t> libraryLightBrightnessDaytime(202);
+Setting<brightness_t> libraryLightBrightnessEvening(203);
+Setting<brightness_t> libraryLightBrightnessNighttime(204);
+Setting<brightness_t> libraryLightBrightnessWhenOpen(205);
 BatteryHistory::Storage batteryHistoryStorage(1000);
 Setting<uint8_t> testSetting1(2000);
 Setting<int8_t> testSetting2(2001);
@@ -134,17 +137,20 @@ void resetSettings() {
   dawnHour.set(7);
   duskHour.set(18);
   nightHour.set(23);
-  daytimeBrightness.set(BRIGHTNESS_MAX);
-  eveningBrightness.set(BRIGHTNESS_MAX);
-  nighttimeBrightness.set(BRIGHTNESS_MAX);
   lightsOn.set(OnOff::ON);
   lowBatteryCutoff.set(LowBattery::V3_4);
   sleepOn.set(OnOff::ON);
   museumLightTint.set(TINT_WHITE);
-  museumLightBrightness.set(BRIGHTNESS_MAX);
+  museumLightTone.set(TONE_DEFAULT);
+  museumLightBrightnessDaytime.set(BRIGHTNESS_OFF);
+  museumLightBrightnessEvening.set(BRIGHTNESS_MAX);
+  museumLightBrightnessNighttime.set(BRIGHTNESS_MIN);
   libraryLightTint.set(TINT_WHITE);
+  libraryLightTone.set(TONE_DEFAULT);
+  libraryLightBrightnessDaytime.set(BRIGHTNESS_OFF);
+  libraryLightBrightnessEvening.set(BRIGHTNESS_MAX);
+  libraryLightBrightnessNighttime.set(BRIGHTNESS_MIN);
   libraryLightBrightnessWhenOpen.set(BRIGHTNESS_MAX);
-  libraryLightBrightnessWhenClosed.set(BRIGHTNESS_MAX);
   testSetting1.set(0);
   testSetting2.set(0);
   strandTestPattern.set(StrandTestPattern::DISABLED);
@@ -224,19 +230,6 @@ TimeOfDay timeOfDay() {
   }
   return TimeOfDay::NIGHTTIME;
 }
-
-brightness_t brightnessForTimeOfDay() {
-  switch (timeOfDay()) {
-    case TimeOfDay::DAYTIME:
-      return daytimeBrightness.get();
-    case TimeOfDay::EVENING:
-      return eveningBrightness.get();
-    case TimeOfDay::NIGHTTIME:
-      return nighttimeBrightness.get();
-  }
-  return 1.0f;
-}
-
 } // namespace
 
 template <typename Fn>
@@ -260,7 +253,10 @@ std::unique_ptr<Menu> makeMuseumMenu() {
   auto menu = std::make_unique<Menu>();
   menu->addItem(std::make_unique<TitleItem>("MUSEUM"));
   menu->addItem(std::make_unique<TintItem>("Tint", museumLightTint));
-  menu->addItem(std::make_unique<BrightnessItem>("Brightness", museumLightBrightness));
+  menu->addItem(std::make_unique<ToneItem>("Tone", museumLightTint, museumLightTone));
+  menu->addItem(std::make_unique<BrightnessItem>("Brightness: Day", museumLightBrightnessDaytime));
+  menu->addItem(std::make_unique<BrightnessItem>("Brightness: Evening", museumLightBrightnessEvening));
+  menu->addItem(std::make_unique<BrightnessItem>("Brightness: Night", museumLightBrightnessNighttime));
   return menu;
 }
 
@@ -268,8 +264,11 @@ std::unique_ptr<Menu> makeLibraryMenu() {
   auto menu = std::make_unique<Menu>();
   menu->addItem(std::make_unique<TitleItem>("LIBRARY"));
   menu->addItem(std::make_unique<TintItem>("Tint", libraryLightTint));
-  menu->addItem(std::make_unique<BrightnessItem>("Brightness - Open", libraryLightBrightnessWhenOpen));
-  menu->addItem(std::make_unique<BrightnessItem>("Brightness - Closed", libraryLightBrightnessWhenClosed));
+  menu->addItem(std::make_unique<ToneItem>("Tone", libraryLightTint, libraryLightTone));
+  menu->addItem(std::make_unique<BrightnessItem>("Brightness: Day", libraryLightBrightnessDaytime));
+  menu->addItem(std::make_unique<BrightnessItem>("Brightness: Evening", libraryLightBrightnessEvening));
+  menu->addItem(std::make_unique<BrightnessItem>("Brightness: Night", libraryLightBrightnessNighttime));
+  menu->addItem(std::make_unique<BrightnessItem>("Brightness: Door Open", libraryLightBrightnessWhenOpen));
   return menu;
 }
 
@@ -335,12 +334,6 @@ std::unique_ptr<Menu> makePowerSavingMenu() {
     duskHour, 0, 23, 1));
   menu->addItem(std::make_unique<NumericItem<uint8_t>>("Night Hour",
     nightHour, 0, 23, 1));
-  menu->addItem(std::make_unique<BrightnessItem>("Daytime Brightness",
-    daytimeBrightness));
-  menu->addItem(std::make_unique<BrightnessItem>("Evening Brightness",
-    eveningBrightness));
-  menu->addItem(std::make_unique<BrightnessItem>("Nighttime Brightness",
-    nighttimeBrightness));
   menu->addItem(std::make_unique<NumericItem<uint8_t>>("Display Timeout (s)",
     activityTimeoutSeconds, 0, 240, 10));
   menu->addItem(std::make_unique<ChoiceItem<LowBattery>>("Low Battery Cutoff", lowBatteryCutoff));
@@ -364,6 +357,7 @@ private:
   static constexpr uint32_t CHART_HEIGHT = 36;
   static constexpr uint32_t CHART_X = DISPLAY_WIDTH - CHART_WIDTH - 1;
   static constexpr uint32_t CHART_Y = DISPLAY_HEIGHT - CHART_HEIGHT - 11;
+  static constexpr int32_t SCROLL_SPEED = 8;
   static constexpr uint32_t SCROLL_MIN = 0;
   static constexpr uint32_t SCROLL_MAX = BatteryHistory::LENGTH - CHART_WIDTH;
   static constexpr float VOLTAGE_MIN = 3.2f;
@@ -458,7 +452,8 @@ void BatteryMonitor::draw(Context& context, Canvas& canvas) {
 bool BatteryMonitor::input(Context& context, const InputEvent& event) {
   switch (event.type) {
     case InputType::ROTATE:
-      _scroll = std::min(std::max(int32_t(_scroll) + event.value * 4, int32_t(SCROLL_MIN)), int32_t(SCROLL_MAX));
+      _scroll = std::min(std::max(int32_t(_scroll) + event.value * SCROLL_SPEED,
+          int32_t(SCROLL_MIN)), int32_t(SCROLL_MAX));
       context.requestDraw();
       return true;
     default:
@@ -563,8 +558,8 @@ void BoardTest::draw(Context& context, Canvas& canvas) {
       break;
   }
 
-  canvas.setDisplayColor(colorWheel(_values[0])* 0.8f);
-  canvas.setKnobColor(colorWheel(_values[1]) * 0.4f);
+  canvas.setDisplayColor(RGB::colorWheel(_values[0]) * 0.8f);
+  canvas.setKnobColor(RGB::colorWheel(_values[1]) * 0.4f);
 }
 
 std::unique_ptr<BoardTest> makeBoardTestScene() {
@@ -618,20 +613,49 @@ std::unique_ptr<Menu> makeRootMenu() {
   return menu;
 }
 
-LightState renderMuseumLights(float scale) {
-  RGBW color = makeStripColor(museumLightTint.get(), museumLightBrightness.get()) * scale;
+brightness_t museumLightBrightness() {
+  switch (timeOfDay()) {
+    case TimeOfDay::DAYTIME:
+      return museumLightBrightnessDaytime.get();
+    case TimeOfDay::EVENING:
+      return museumLightBrightnessEvening.get();
+    case TimeOfDay::NIGHTTIME:
+      return museumLightBrightnessNighttime.get();
+  }
+  return BRIGHTNESS_OFF;
+}
+
+LightState renderMuseumLights() {
+  brightness_t brightness = museumLightBrightness();
+  if (brightness == BRIGHTNESS_OFF) return LightState::OFF;
+  
+  RGBW color = makeStripColor(museumLightTint.get(), museumLightTone.get(), brightness);
   for (size_t i = 0; i < LIGHTS_MUSEUM_COUNT; i++) {
     newLights[i + LIGHTS_MUSEUM_FIRST] = color;
   }
   return LightState::ON;
 }
 
-LightState renderLibraryLights(float scale) {
-  brightness_t brightness = libraryDoor.on() ?
-      libraryLightBrightnessWhenClosed.get() :
-      libraryLightBrightnessWhenOpen.get();
+brightness_t libraryLightBrightness() {
+  if (!libraryDoor.on()) {
+    return libraryLightBrightnessWhenOpen.get();
+  }
+  switch (timeOfDay()) {
+    case TimeOfDay::DAYTIME:
+      return libraryLightBrightnessDaytime.get();
+    case TimeOfDay::EVENING:
+      return libraryLightBrightnessEvening.get();
+    case TimeOfDay::NIGHTTIME:
+      return libraryLightBrightnessNighttime.get();
+  }
+  return BRIGHTNESS_OFF;
+}
 
-  RGBW color = makeStripColor(libraryLightTint.get(), brightness) * scale;
+LightState renderLibraryLights() {
+  brightness_t brightness = libraryLightBrightness();
+  if (brightness == BRIGHTNESS_OFF) return LightState::OFF;
+
+  RGBW color = makeStripColor(libraryLightTint.get(), libraryLightTone.get(), brightness);
   for (size_t i = 0; i < LIGHTS_LIBRARY_COUNT; i++) {
     newLights[i + LIGHTS_LIBRARY_FIRST] = color;
   }
@@ -660,7 +684,7 @@ LightState renderStrandTest() {
     case StrandTestPattern::RAINBOW: {
       uint8_t pos = millis() >> 4;
       for (size_t i = 0; i < LIGHTS_TOTAL_COUNT; i++) {
-        newLights[i] = colorWheel(pos + i).toRGBW();
+        newLights[i] = RGBW::fromRGB(RGB::colorWheel(pos + i));
       }
       return LightState::ANIMATING;
     }
@@ -677,9 +701,8 @@ LightState renderLights() {
 
   LightState state = renderStrandTest();
   if (state == LightState::OFF && lightsOn.get() != OnOff::OFF) {
-    const float scale = brightnessForTimeOfDay() * 0.1f;
-    state = renderMuseumLights(scale);
-    state = mergeLightState(state, renderLibraryLights(scale));
+    state = renderMuseumLights();
+    state = mergeLightState(state, renderLibraryLights());
   }
   return state;
 }
@@ -769,8 +792,43 @@ void setup() {
   snoozeTimer.setTimer(60000);
 #if USE_BUILTIN_LED
   pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+#endif
+}
+
+bool sleepWhenReady(bool canSleep) {
+  static uint32_t readyToSleepAt = 0;
+  if (!canSleep) {
+    readyToSleepAt = 0;
+    return false;
+  }
+
+  uint32_t time = millis();
+  if (!readyToSleepAt) {
+    readyToSleepAt = time;
+    return false;
+  }
+    
+  if (time - readyToSleepAt < 350) {
+    // allow for debouncing
+    return false;
+  }
+
+#if USE_BUILTIN_LED
   digitalWrite(LED_BUILTIN, LOW);
 #endif
+
+  // Go to sleep.  We can't use deepSleep() because not all of the inputs
+  // we need to monitor support low-level wakeups (see LLWU matrix in processor
+  // documentation).
+  Snooze.sleep(snoozeBlock);
+
+#if USE_BUILTIN_LED
+  digitalWrite(LED_BUILTIN, HIGH);
+#endif
+
+  readyToSleepAt = 0;
+  return true; // did sleep
 }
 
 void loop() {
@@ -787,26 +845,10 @@ void loop() {
   LightState state = updateLights();
 
   // Go to sleep if nothing else going on
-  static uint32_t readyToSleepAt = 0;
-  if (sleepOn.get() == OnOff::ON && state != LightState::ANIMATING
-      && panel.canSleep() && stage.canSleep()) {
-    uint32_t time = millis();
-    if (!readyToSleepAt) {
-      readyToSleepAt = time;
-    } else if (time - readyToSleepAt >= 500) {
-#if USE_BUILTIN_LED
-      digitalWrite(LED_BUILTIN, LOW);
-#endif
-      // Go to sleep.  We can't use deepSleep() because not all of the inputs
-      // we need to monitor support low-level wakeups (see LLWU matrix in processor
-      // documentation).
-      Snooze.sleep(snoozeBlock);
-      readyToSleepAt = 0;
-    }
-  } else {
-    readyToSleepAt = 0;
+  bool canSleep = sleepOn.get() == OnOff::ON && state != LightState::ANIMATING
+      && panel.canSleep() && stage.canSleep();
+  if (!sleepWhenReady(canSleep)) {
+    // Save about 3 mA by throttling the loop a little
+    delay(5);
   }
-#if USE_BUILTIN_LED
-  digitalWrite(LED_BUILTIN, HIGH);
-#endif
 }

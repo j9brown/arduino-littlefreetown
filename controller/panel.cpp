@@ -4,7 +4,8 @@
 #include "utils.h"
 
 namespace {
-const u8g2_cb_t* LCD_ROTATION = U8G2_R2;
+//const u8g2_cb_t* LCD_ROTATION = U8G2_R2;
+const u8g2_cb_t* LCD_ROTATION = U8G2_R0;
 const int LCD_CS = 9;
 const int LCD_A0 = 8;
 const int LCD_RST = 7;
@@ -23,8 +24,6 @@ const int BTN_EN1 = 15;
 const int BTN_EN2 = 16;
 } // namespace
 
-Panel* Panel::_self;
-
 Panel::Panel() :
     _display(LCD_ROTATION, LCD_CS, LCD_A0, LCD_RST),
     _leds(3, LED_DIN, NEO_RGB | NEO_KHZ800),
@@ -35,9 +34,6 @@ Panel::Panel() :
 }
 
 void Panel::begin(SnoozeDigital& snoozeDigital) {
-  assert(_self == nullptr);
-  _self = this;
-
   // Reassign the SPI pins
   SPI.setMOSI(LCD_MOSI);
   SPI.setMISO(LCD_MISO);
@@ -52,19 +48,16 @@ void Panel::begin(SnoozeDigital& snoozeDigital) {
 
   // Initialize the rotary encoder
   _knobEncoder.begin();
-  attachInterrupt(digitalPinToInterrupt(BTN_EN1), handleKnobRotation, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(BTN_EN2), handleKnobRotation, CHANGE);
 
   // Configure snooze block
   snoozeDigital.pinMode(BTN_ENC, INPUT_PULLUP, CHANGE);
   snoozeDigital.pinMode(SW_KILL, INPUT, CHANGE);
-  // Not needed because the rotary encoder interrupts remain active during sleep
-  //snoozeDigital.pinMode(BTN_EN1, INPUT_PULLUP, CHANGE);
-  //snoozeDigital.pinMode(BTN_EN2, INPUT_PULLUP, CHANGE);
+  snoozeDigital.pinMode(BTN_EN1, INPUT_PULLUP, CHANGE);
+  snoozeDigital.pinMode(BTN_EN2, INPUT_PULLUP, CHANGE);
 }
 
 void Panel::update() {
-  // TODO: move to an ISR
+  updateKnobRotation();
   updateButton(&_knobButton, &_knobButtonEvent);
   updateButton(&_killButton, &_killButtonEvent);
 }
@@ -78,17 +71,17 @@ void Panel::setColors(RGB display, RGB knob) {
 
 int32_t Panel::readKnobRotations() {
   int32_t count = _knobRotations;
-  _knobRotations -= count;
+  _knobRotations = 0;
   return count;
 }
 
-void Panel::handleKnobRotation() {
-  switch (_self->_knobEncoder.read()) {
+void Panel::updateKnobRotation() {
+  switch (_knobEncoder.read()) {
     case DIR_CW:
-      _self->_knobRotations++;
+      _knobRotations++;
       break;
     case DIR_CCW:
-      _self->_knobRotations--;
+      _knobRotations--;
       break;
   }
 }
@@ -105,7 +98,7 @@ Panel::ButtonEvent Panel::readKillButton() {
   return event;
 }
 
-void Panel::updateButton(Switch* button, volatile ButtonEvent* event) {
+void Panel::updateButton(Switch* button, ButtonEvent* event) {
   button->poll();
   if (button->doubleClick()) {
     *event = ButtonEvent::DOUBLE_CLICK;

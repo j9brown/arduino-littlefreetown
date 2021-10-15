@@ -12,33 +12,26 @@ inline void assert(bool condition) {
 
 void printDateAndTime(Print& printer, time_t time);
 
-// Linear RGB color
-struct RGBW;
+// Linear RGB color, 8-bit integer components. 
 struct RGB {
   uint8_t r, g, b;
 
-  RGB operator*(float frac) const {
-    return RGB{uint8_t(r * frac), uint8_t(g * frac), uint8_t(b * frac)};
-  }
+  static RGB colorWheel(uint8_t pos);
+
+  RGB operator*(float scale) const;
 
   bool operator==(const RGB& other) const {
     return r == other.r && g == other.g && b == other.b;
   }
 
   bool operator!=(const RGB& other) const { return !(*this == other); }
-
-  inline RGBW toRGBW() const;
 };
 
-RGB colorWheel(uint8_t pos);
-
-// Linear RGBW color
+// Linear RGBW color, 8-bit integer omponents.
 struct RGBW {
   uint8_t r, g, b, w;
 
-  RGBW operator*(float frac) const {
-    return RGBW{uint8_t(r * frac), uint8_t(g * frac), uint8_t(b * frac), uint8_t(w * frac)};
-  }
+  static RGBW fromRGB(const RGB& other);
 
   bool operator==(const RGBW& other) const {
     return r == other.r && g == other.g && b == other.b && w == other.w;
@@ -47,8 +40,8 @@ struct RGBW {
   bool operator!=(const RGBW& other) const { return !(*this == other); }
 };
 
-inline RGBW RGB::toRGBW() const {
-  return RGBW{r, g, b, 0};
+inline RGBW RGBW::fromRGB(const RGB& other) {
+  return RGBW{other.r, other.g, other.b, 0};
 }
 
 // Lightness, Chroma, Hue representation
@@ -62,25 +55,37 @@ struct LCH {
   RGB toRGB() const;
 };
 
-// A color tint (hue) to apply to white light for illumination.
+// Color tint (hue) to apply to white light for illumination.
+// This definition allows for non-chromatic tints to be defined and
+// simplifies the user interface by offering relatively few choices.
 using tint_t = uint8_t;
 constexpr tint_t TINT_WHITE = 0;
 constexpr tint_t TINT_MIN = 0;
 constexpr tint_t TINT_MAX = 36;
 void printTint(Print& printer, tint_t tint);
 
+// Returns true if a tone can be applied to the given tint.
+inline bool tintHasTone(tint_t tint) { return tint != TINT_WHITE; }
+
+// Color tone (saturation) of a light source on a scale of 1 to 10.
+using tone_t = uint8_t;
+constexpr tone_t TONE_DEFAULT = 3;
+constexpr tone_t TONE_MIN = 1;
+constexpr tone_t TONE_MAX = 10;
+void printTone(Print& printer, tint_t tint, tone_t tone);
+
 // Brightness of a light source on a scale of 1 to 10.
 using brightness_t = uint8_t;
 constexpr brightness_t BRIGHTNESS_OFF = 0;
 constexpr brightness_t BRIGHTNESS_MIN = 0;
 constexpr brightness_t BRIGHTNESS_MAX = 10;
-void printBrightness(Print& printer, brightness_t tint);
+void printBrightness(Print& printer, brightness_t brightness);
 
 // Generates a color suitable for display on the panel knob.
-RGB makeKnobColor(tint_t tint, brightness_t brightness);
+RGB makeKnobColor(tint_t tint, tone_t tone, brightness_t brightness);
 
 // Generates a color suitable for display on an LED strip.
-RGBW makeStripColor(tint_t tint, brightness_t brightness);
+RGBW makeStripColor(tint_t tint, tone_t tone, brightness_t brightness);
 
 // Adds a multiple of a given step size to a value, clamps it to a range,
 // if already at minimum or maximum, rolls over to the opposite end of the

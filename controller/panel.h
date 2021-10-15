@@ -99,20 +99,18 @@ private:
   Panel& operator=(const Panel&) = delete;
   Panel& operator=(Panel&&) = delete;
 
-  static void handleKnobRotation();
-  static void updateButton(Switch* button, volatile ButtonEvent* event);
-
-  static Panel* _self; // for use in interrupt contexts
+  void updateKnobRotation();
+  static void updateButton(Switch* button, ButtonEvent* event);
 
   U8G2_ST7567_OS12864_F_4W_HW_SPI _display;
   Adafruit_NeoPixel _leds;
 
   MD_REncoder _knobEncoder;
-  volatile int32_t _knobRotations;
+  int32_t _knobRotations;
 
   Switch _knobButton;
-  volatile ButtonEvent _knobButtonEvent;
+  ButtonEvent _knobButtonEvent;
 
   Switch _killButton;
-  volatile ButtonEvent _killButtonEvent;
+  ButtonEvent _killButtonEvent;
 };
